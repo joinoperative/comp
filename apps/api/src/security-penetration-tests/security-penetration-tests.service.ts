@@ -189,7 +189,11 @@ const ORIGINAL_RUN_LINEAGE: RunLineage = {
 @Injectable()
 export class SecurityPenetrationTestsService {
   private readonly logger = new Logger(SecurityPenetrationTestsService.name);
-  private readonly macedClient: MacedClient;
+  // Operative: null when MACED_API_KEY is unset (self-hosted deployments have no
+  // Maced account). Upstream threw at construction, which took the whole API
+  // down; here the module starts and every provider-backed endpoint answers 503
+  // through the `maced` getter below instead.
+  private readonly macedClient: MacedClient | null;
 
   constructor(
     private readonly credits: PentestCreditsService,
@@ -197,8 +201,11 @@ export class SecurityPenetrationTestsService {
   ) {
     const apiKey = process.env.MACED_API_KEY;
     if (!apiKey) {
-      // Throw at construction so the app fails loudly on boot, not on first request.
-      throw new Error('MACED_API_KEY is required to start the pentest module');
+      this.logger.warn(
+        'MACED_API_KEY not set — penetration-testing provider disabled; its endpoints return 503',
+      );
+      this.macedClient = null;
+      return;
     }
     this.macedClient = createMacedClient({
       apiKey,
@@ -221,6 +228,20 @@ export class SecurityPenetrationTestsService {
    * (network / unexpected) are mapped to 502 BAD_GATEWAY but we surface as
    * much detail as we can so the frontend toast is actually useful.
    */
+  private get maced(): MacedClient {
+    if (!this.macedClient) {
+      throw new HttpException(
+        {
+          error:
+            'Penetration testing is not available on this deployment (MACED_API_KEY not configured)',
+          source: 'config',
+        },
+        HttpStatus.SERVICE_UNAVAILABLE,
+      );
+    }
+    return this.macedClient;
+  }
+
   private async callMaced<T>(
     fn: () => Promise<T>,
     context: string,
@@ -228,6 +249,10 @@ export class SecurityPenetrationTestsService {
     try {
       return await fn();
     } catch (error) {
+      if (error instanceof HttpException) {
+        // Already shaped for the client (e.g. the provider-not-configured 503 above).
+        throw error;
+      }
       if (error instanceof MacedApiError) {
         const body =
           typeof error.body === 'object' && error.body !== null
@@ -317,7 +342,7 @@ export class SecurityPenetrationTestsService {
     }
 
     const reports = await this.callMaced(
-      () => this.macedClient.pentests.list(),
+      () => this.maced.pentests.list(),
       'listing penetration tests',
     );
     const reportById = new Map(reports.map((report) => [report.id, report]));
@@ -465,7 +490,7 @@ export class SecurityPenetrationTestsService {
     try {
       createdReport = await this.callMaced(
         () =>
-          this.macedClient.pentests.create(
+          this.maced.pentests.create(
             body,
             idempotencyKey ? { idempotencyKey } : undefined,
           ),
@@ -618,7 +643,7 @@ export class SecurityPenetrationTestsService {
     const { rootRunId, activeProviderRunId, attemptNumber, retryEligible } =
       await this.resolveActiveAttempt(organizationId, id);
     const report = await this.callMaced(
-      () => this.macedClient.pentests.get(activeProviderRunId),
+      () => this.maced.pentests.get(activeProviderRunId),
       `fetching penetration test ${activeProviderRunId}`,
     );
     return {
@@ -652,7 +677,7 @@ export class SecurityPenetrationTestsService {
       id,
     );
     const progress = await this.callMaced(
-      () => this.macedClient.pentests.progress(activeProviderRunId),
+      () => this.maced.pentests.progress(activeProviderRunId),
       `fetching penetration test progress ${activeProviderRunId}`,
     );
     // The only divergence from progress's own status is the failed↔provisioning
@@ -671,7 +696,7 @@ export class SecurityPenetrationTestsService {
       id,
     );
     return this.callMaced(
-      () => this.macedClient.pentests.issues(activeProviderRunId),
+      () => this.maced.pentests.issues(activeProviderRunId),
       `fetching penetration test issues ${activeProviderRunId}`,
     );
   }
@@ -686,7 +711,7 @@ export class SecurityPenetrationTestsService {
       id,
     );
     const events = await this.callMaced(
-      () => this.macedClient.pentests.events(activeProviderRunId),
+      () => this.maced.pentests.events(activeProviderRunId),
       `fetching penetration test events ${activeProviderRunId}`,
     );
     // Filter at the API layer (defense in depth) — a UI-only filter
@@ -708,7 +733,7 @@ export class SecurityPenetrationTestsService {
     );
 
     const report = await this.callMaced(
-      () => this.macedClient.pentests.report(activeProviderRunId),
+      () => this.maced.pentests.report(activeProviderRunId),
       `fetching penetration test report ${activeProviderRunId}`,
     );
 
@@ -738,7 +763,7 @@ export class SecurityPenetrationTestsService {
     );
 
     const blob = await this.callMaced(
-      () => this.macedClient.pentests.reportPdf(activeProviderRunId),
+      () => this.maced.pentests.reportPdf(activeProviderRunId),
       `fetching penetration test PDF ${activeProviderRunId}`,
     );
 
