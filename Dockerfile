@@ -148,6 +148,16 @@ ENV NEXT_PUBLIC_BETTER_AUTH_URL=$NEXT_PUBLIC_BETTER_AUTH_URL \
     NODE_OPTIONS=--max_old_space_size=6144
 
 # Build the app
+# Build the workspace packages the app imports; their package.json entry points
+# are dist/ outputs (the API Dockerfile does the same). Order follows the
+# dependency chain: db -> auth -> integration-platform -> email -> company -> billing.
+RUN cd packages/db && bun run build \
+  && cd ../auth && bun run build \
+  && cd ../integration-platform && bun run build \
+  && cd ../email && bun run build \
+  && cd ../company && bun run build \
+  && cd ../billing && bun run build
+
 RUN cd apps/app && SKIP_ENV_VALIDATION=true bun run build:docker
 
 # =============================================================================
@@ -197,6 +207,15 @@ ENV NEXT_PUBLIC_BETTER_AUTH_URL=$NEXT_PUBLIC_BETTER_AUTH_URL \
     NODE_OPTIONS=--max_old_space_size=6144
 
 # Build the portal
+# Build the workspace packages the portal imports (dist/ entry points).
+RUN cd packages/db && bun run build \
+  && cd ../auth && bun run build \
+  && cd ../email && bun run build \
+  && cd ../company && bun run build \
+  && cd ../kv && bun run build \
+  && cd ../ui && bun run build \
+  && cd ../analytics && bun run build
+
 RUN cd apps/portal && SKIP_ENV_VALIDATION=true bun run build:docker
 
 # =============================================================================
