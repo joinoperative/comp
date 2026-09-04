@@ -9,13 +9,13 @@
 # install is filtered or only a subset of packages is built. Upstream's
 # hand-picked COPY list drifted from package.json (auth/billing/company/db
 # were missing) and broke the build. Gather them all, preserving paths.
-FROM oven/bun:1.2.8 AS manifests
+FROM oven/bun:1.3.4 AS manifests
 WORKDIR /src
 COPY . .
 RUN mkdir -p /out && find . -name package.json -not -path '*/node_modules/*' \
     -exec sh -c 'mkdir -p "/out/$(dirname "$1")" && cp "$1" "/out/$1"' _ {} \;
 
-FROM oven/bun:1.2.8 AS deps
+FROM oven/bun:1.3.4 AS deps
 
 WORKDIR /app
 
@@ -40,7 +40,7 @@ RUN PRISMA_SKIP_POSTINSTALL_GENERATE=true bun install --ignore-scripts
 # so this stays minimal — packages/db itself has no workspace:* dependencies on any other
 # package in this monorepo, only @prisma/adapter-pg, @prisma/client, dotenv and zod) and use its
 # own prisma.config.ts, instead of faking the published-package layout.
-FROM oven/bun:1.2.8 AS migrator
+FROM oven/bun:1.3.4 AS migrator
 
 WORKDIR /app
 
@@ -66,7 +66,9 @@ COPY packages/db/tsconfig.json ./packages/db/
 # @prisma/adapter-pg — which brings in pg transitively — zod, dotenv). Its own "postinstall"
 # script (scripts/generate-prisma-client-js.js) generates the Prisma client automatically, but
 # tolerates failure (`|| true`) — don't rely on that alone; see the explicit RUN below.
-RUN bun install --filter @trycompai/db
+# --ignore-scripts: prisma's preinstall Node-version check and the db package's own
+# postinstall are skipped here; the client is generated explicitly below.
+RUN bun install --filter @trycompai/db --ignore-scripts
 
 # Fail the build loudly if client generation didn't happen, instead of silently shipping an
 # image where `@prisma/client` can't be imported (which is exactly the old bug this replaces).
