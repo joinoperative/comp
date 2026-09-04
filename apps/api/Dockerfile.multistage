@@ -61,6 +61,12 @@ COPY packages/billing ./packages/billing
 # Copy API source
 COPY apps/api ./apps/api
 
+# Re-link workspace node_modules: the source COPY above replaces each package
+# directory (wiping any nested node_modules the install created there), and
+# bun may place workspace-local deps such as `prisma` (devDependency of
+# packages/db) below the package rather than at the root. Cached, no scripts.
+RUN bun install --ignore-scripts
+
 # Build db — generates Prisma client + compiles dist/ for @trycompai/db consumers
 RUN cd packages/db && bun run build
 

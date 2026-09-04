@@ -101,6 +101,12 @@ COPY apps/app ./apps/app
 # Bring in node_modules for build and prisma prebuild
 COPY --from=deps /app/node_modules ./node_modules
 
+# Re-link workspace node_modules: the source COPY above replaces each package
+# directory (wiping any nested node_modules the install created there), and
+# bun may place workspace-local deps such as `prisma` (devDependency of
+# packages/db) below the package rather than at the root. Cached, no scripts.
+RUN bun install --ignore-scripts
+
 # Pre-combine schemas and generate the Prisma client into
 # node_modules/@prisma/client. The deps stage ran `bun install` with
 # `--ignore-scripts` so packages/db's postinstall was skipped; we run
@@ -170,6 +176,12 @@ COPY apps/portal ./apps/portal
 
 # Bring in node_modules for build and prisma prebuild
 COPY --from=deps /app/node_modules ./node_modules
+
+# Re-link workspace node_modules: the source COPY above replaces each package
+# directory (wiping any nested node_modules the install created there), and
+# bun may place workspace-local deps such as `prisma` (devDependency of
+# packages/db) below the package rather than at the root. Cached, no scripts.
+RUN bun install --ignore-scripts
 
 # Pre-combine schemas for portal build
 RUN cd packages/db && node scripts/combine-schemas.js
