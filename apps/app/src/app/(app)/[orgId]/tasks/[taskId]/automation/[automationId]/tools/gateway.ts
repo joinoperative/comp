@@ -2,8 +2,14 @@ import { createGatewayProvider } from '@ai-sdk/gateway';
 import type { OpenAIResponsesProviderOptions } from '@ai-sdk/openai';
 import type { LanguageModelV3 } from '@ai-sdk/provider';
 import type { JSONValue } from 'ai';
+import { fallbackModelId, isAiGatewayConfigured, resolveModel } from '@/lib/ai/resolve-model';
 
 export async function getAvailableModels() {
+  if (!isAiGatewayConfigured()) {
+    // Operative: no Vercel AI Gateway — offer the OpenAI fallback model only.
+    const id = `openai/${fallbackModelId()}`;
+    return [{ id, name: id }];
+  }
   const gateway = gatewayInstance();
   const response = await gateway.getAvailableModels();
   return response.models.map((model) => ({ id: model.id, name: model.name }));
@@ -19,6 +25,11 @@ export function getModelOptions(
   modelId: string,
   options?: { reasoningEffort?: 'minimal' | 'low' | 'medium' },
 ): ModelOptions {
+  if (!isAiGatewayConfigured()) {
+    // Operative: direct provider; the Responses-API reasoning options below
+    // assume the gateway's OpenAI reasoning models, so they are not applied.
+    return { model: resolveModel(modelId) };
+  }
   const gateway = gatewayInstance();
 
   return {

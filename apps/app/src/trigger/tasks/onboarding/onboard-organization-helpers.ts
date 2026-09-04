@@ -1,4 +1,4 @@
-import { createGatewayProvider } from '@ai-sdk/gateway';
+import { resolveModel } from '@/lib/ai/resolve-model';
 import {
   Departments,
   FrameworkEditorFramework,
@@ -15,9 +15,6 @@ import { db } from '@db/server';
 import { logger, metadata, tasks } from '@trigger.dev/sdk';
 import { generateObject, jsonSchema } from 'ai';
 
-const gateway = createGatewayProvider({
-  baseURL: process.env.AI_GATEWAY_BASE_URL,
-});
 const ONBOARDING_MODEL = 'google/gemini-3-flash' as const;
 import axios from 'axios';
 import { z } from 'zod';
@@ -513,7 +510,7 @@ export async function extractVendorsFromContext(
   const customVendorNameSet = new Set(customVendors.map((v) => v.name.toLowerCase()));
 
   const { object } = await generateObject({
-    model: gateway(ONBOARDING_MODEL),
+    model: resolveModel(ONBOARDING_MODEL),
     schema: jsonSchema({
       type: 'object',
       properties: {
@@ -681,7 +678,7 @@ Citations (write one sentence per item, in order):
 ${formatCitationsBlock(citations)}`;
 
   const result = await generateObject({
-    model: gateway(ONBOARDING_MODEL),
+    model: resolveModel(ONBOARDING_MODEL),
     system: RISK_MITIGATION_PROMPT,
     prompt: userPrompt,
     schema: sentencesSchema,
@@ -1055,7 +1052,7 @@ Citations (write one sentence per item, in order):
 ${formatCitationsBlock(citations)}`;
 
   const result = await generateObject({
-    model: gateway(ONBOARDING_MODEL),
+    model: resolveModel(ONBOARDING_MODEL),
     system: RISK_MITIGATION_PROMPT,
     prompt: userPrompt,
     schema: sentencesSchema,
@@ -1127,7 +1124,7 @@ export async function extractRisksFromContext(
   existingRisks: { title: string }[],
 ): Promise<RiskData[]> {
   const { object } = await generateObject({
-    model: gateway(ONBOARDING_MODEL),
+    model: resolveModel(ONBOARDING_MODEL),
     schema: jsonSchema({
       type: 'object',
       properties: {

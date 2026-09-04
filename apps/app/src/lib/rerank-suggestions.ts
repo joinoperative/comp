@@ -1,4 +1,4 @@
-import { createGatewayProvider } from '@ai-sdk/gateway';
+import { resolveModel } from '@/lib/ai/resolve-model';
 import { generateObject, jsonSchema } from 'ai';
 
 /**
@@ -38,10 +38,6 @@ export interface RerankedCandidate {
   /** 0-10, returned by the LLM. Higher is more relevant. */
   rerankScore: number;
 }
-
-const gateway = createGatewayProvider({
-  baseURL: process.env.AI_GATEWAY_BASE_URL,
-});
 
 /**
  * GA slug. Never pin a `-preview` alias here: the gateway retires it once the model
@@ -114,7 +110,7 @@ export async function rerankSuggestions({
     .join('\n');
 
   const result = await generateObject({
-    model: gateway(RERANK_MODEL),
+    model: resolveModel(RERANK_MODEL),
     system: SYSTEM_PROMPT,
     prompt: userPrompt,
     schema: rerankSchema,

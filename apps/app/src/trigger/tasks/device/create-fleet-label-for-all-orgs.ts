@@ -5,6 +5,11 @@ import { createFleetLabelForOrg } from './create-fleet-label-for-org';
 export const createFleetLabelForAllOrgs = task({
   id: 'create-fleet-label-for-all-orgs',
   run: async () => {
+    if (!process.env.FLEET_URL || !process.env.FLEET_TOKEN) {
+      // Operative: no Fleet (device management) server in this deployment.
+      logger.info('Fleet is not configured (FLEET_URL/FLEET_TOKEN unset) — skipping fleet label creation');
+      return;
+    }
     const organizations = await db.organization.findMany({
       where: {
         isFleetSetupCompleted: false,
