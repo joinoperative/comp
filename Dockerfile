@@ -1,6 +1,20 @@
 # =============================================================================
 # STAGE 1: Dependencies - Install and cache workspace dependencies
 # =============================================================================
+# =============================================================================
+# STAGE 0: Workspace manifests — every package.json in the monorepo, tree-shaped
+# =============================================================================
+# `bun install` validates bun.lock's workspace graph, so every workspace
+# package.json referenced by the lockfile must exist on disk even when the
+# install is filtered or only a subset of packages is built. Upstream's
+# hand-picked COPY list drifted from package.json (auth/billing/company/db
+# were missing) and broke the build. Gather them all, preserving paths.
+FROM oven/bun:1.2.8 AS manifests
+WORKDIR /src
+COPY . .
+RUN mkdir -p /out && find . -name package.json -not -path '*/node_modules/*' \
+    -exec sh -c 'mkdir -p "/out/$(dirname "$1")" && cp "$1" "/out/$1"' _ {} \;
+
 FROM oven/bun:1.2.8 AS deps
 
 WORKDIR /app
@@ -8,19 +22,8 @@ WORKDIR /app
 # Copy workspace configuration
 COPY package.json bun.lock ./
 
-# Copy package.json files for all packages (exclude local db; use published @trycompai/db)
-COPY packages/kv/package.json ./packages/kv/
-COPY packages/ui/package.json ./packages/ui/
-COPY packages/email/package.json ./packages/email/
-COPY packages/integration-platform/package.json ./packages/integration-platform/
-COPY packages/integrations/package.json ./packages/integrations/
-COPY packages/utils/package.json ./packages/utils/
-COPY packages/tsconfig/package.json ./packages/tsconfig/
-COPY packages/analytics/package.json ./packages/analytics/
-
-# Copy app package.json files
-COPY apps/app/package.json ./apps/app/
-COPY apps/portal/package.json ./apps/portal/
+# All workspace package.json files (see the manifests stage above)
+COPY --from=manifests /out/ ./
 
 # Install all dependencies
 RUN PRISMA_SKIP_POSTINSTALL_GENERATE=true bun install --ignore-scripts
@@ -45,6 +48,8 @@ WORKDIR /app
 # even though only packages/db is actually copied in below (bun matches the `workspaces` globs
 # in package.json against what's on disk; globs that match nothing, e.g. apps/* here, are fine).
 COPY package.json bun.lock bunfig.toml ./
+# Every workspace package.json, so bun can validate the lockfile graph (manifests stage above)
+COPY --from=manifests /out/ ./
 
 # The db package itself: schema + migrations + seed data/script (prisma/), its own build/codegen
 # scripts (scripts/), the Prisma config the CLI auto-discovers (prisma.config.ts), src/ (needed:
