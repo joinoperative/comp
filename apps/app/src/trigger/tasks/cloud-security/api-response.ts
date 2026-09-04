@@ -5,8 +5,15 @@ export interface ParsedApiResponse<T> {
   error?: string;
 }
 
+// Operative: this task runs on the Trigger.dev worker (a separate service on Trigger Cloud), so
+// it must prefer BACKEND_API_URL (an internal URL) over the public NEXT_PUBLIC_API_URL.
 export function getCloudSecurityApiBaseUrl(): string {
-  return process.env.NEXT_PUBLIC_API_URL || process.env.API_BASE_URL || 'http://localhost:3333';
+  return (
+    process.env.BACKEND_API_URL ||
+    process.env.NEXT_PUBLIC_API_URL ||
+    process.env.API_BASE_URL ||
+    'http://localhost:3333'
+  );
 }
 
 export function makeServiceTokenHeaders(params: {

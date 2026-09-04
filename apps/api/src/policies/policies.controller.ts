@@ -37,6 +37,10 @@ import { openai } from '@ai-sdk/openai';
 import { streamText, convertToModelMessages, type UIMessage } from 'ai';
 import { db } from '@db';
 import { auth as triggerAuth, tasks } from '@trigger.dev/sdk';
+// Operative: reuse the shared client (APP_AWS_ENDPOINT/forcePathStyle) only when an endpoint is
+// actually configured; unset APP_AWS_ENDPOINT keeps the exact upstream client construction below.
+import { s3Client as sharedS3Client } from '../app/s3';
+import type { S3Client as S3ClientType } from '@aws-sdk/client-s3';
 import type { updatePolicy } from '../trigger/policies/update-policy';
 import { AuditRead } from '../audit/skip-audit-log.decorator';
 import { AuthContext, OrganizationId } from '../auth/auth-context.decorator';
@@ -100,6 +104,18 @@ function parsePolicyIdsParam(
     ),
   );
   return ids.length > 0 ? ids : undefined;
+}
+
+// Operative: shared by every policy-PDF S3 call site below. Use the shared, already-configured
+// client only when APP_AWS_ENDPOINT is set; otherwise construct the exact upstream client so an
+// existing AWS deployment's region/credential-chain handling is unchanged. Takes the S3Client
+// constructor as a parameter (each call site imports it dynamically) so this stays unit-testable
+// without needing the dynamic import machinery itself.
+export function resolvePolicyS3Client(S3ClientCtor: typeof S3ClientType): S3ClientType {
+  if (process.env.APP_AWS_ENDPOINT && sharedS3Client) {
+    return sharedS3Client;
+  }
+  return new S3ClientCtor({ region: process.env.AWS_REGION || 'us-east-1' });
 }
 
 @ApiTags('Policies')
@@ -539,7 +555,7 @@ export class PoliciesController {
       return { url: null };
     }
 
-    const s3 = new S3Client({ region: process.env.AWS_REGION || 'us-east-1' });
+    const s3 = resolvePolicyS3Client(S3Client);
     // Force inline PDF rendering regardless of the object's stored Content-Type.
     // Files uploaded via presigned URLs can land with the wrong type (e.g. the
     // uploader's HTTP client defaults to application/x-www-form-urlencoded),
@@ -653,7 +669,7 @@ export class PoliciesController {
     if (!bucketName)
       throw new BadRequestException('File storage is not configured');
 
-    const s3 = new S3Client({ region: process.env.AWS_REGION || 'us-east-1' });
+    const s3 = resolvePolicyS3Client(S3Client);
 
     const policy = await db.policy.findFirst({
       where: { id, organizationId, archivedAt: null },
@@ -836,7 +852,7 @@ export class PoliciesController {
     if (!bucketName)
       throw new BadRequestException('File storage is not configured');
 
-    const s3 = new S3Client({ region: process.env.AWS_REGION || 'us-east-1' });
+    const s3 = resolvePolicyS3Client(S3Client);
 
     const policy = await db.policy.findFirst({
       where: { id, organizationId, archivedAt: null },
@@ -948,7 +964,7 @@ export class PoliciesController {
     const bucketName = process.env.APP_AWS_BUCKET_NAME;
     if (!bucketName) return { url: null };
 
-    const s3 = new S3Client({ region: process.env.AWS_REGION || 'us-east-1' });
+    const s3 = resolvePolicyS3Client(S3Client);
     // Force inline PDF rendering regardless of the object's stored Content-Type
     // so the browser previews the document instead of downloading it.
     const url = await getSignedUrl(

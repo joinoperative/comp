@@ -1,11 +1,15 @@
 import { Header } from '@/components/header';
 import { OrganizationSwitcher } from '@/components/organization-switcher';
+import { env } from '@/env.mjs';
 import { serverApi } from '@/lib/api-server';
 import type { OrganizationFromMe } from '@/types';
 import { auth } from '@/utils/auth';
 import { headers } from 'next/headers';
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
+
+// Operative: self-hosted deployments shouldn't point users at portal.trycomp.ai
+const portalUrl = env.NEXT_PUBLIC_PORTAL_URL || 'https://portal.trycomp.ai';
 
 interface AuthMeResponse {
   organizations: OrganizationFromMe[];
@@ -36,8 +40,8 @@ export default async function NoAccess() {
         <div className="flex flex-col text-center">
           <p>
             Your current role doesn&apos;t have access to the app. If you&apos;re looking for the employee portal, go to{' '}
-            <Link href="https://portal.trycomp.ai" className="text-primary underline">
-              portal.trycomp.ai
+            <Link href={portalUrl} className="text-primary underline">
+              {portalUrl.replace(/^https?:\/\//, '')}
             </Link>
             .
           </p>

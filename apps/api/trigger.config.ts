@@ -6,7 +6,8 @@ import { integrationPlatformExtension } from './integrationPlatformExtension';
 
 export default defineConfig({
   runtime: 'node-22',
-  project: 'proj_zhioyrusqertqgafqgpj', // API project
+  // Operative: allow overriding the Trigger.dev project for self-hosted forks
+  project: process.env.TRIGGER_PROJECT_REF_API ?? 'proj_zhioyrusqertqgafqgpj', // API project
   logLevel: 'log',
   maxDuration: 300, // 5 minutes
   build: {

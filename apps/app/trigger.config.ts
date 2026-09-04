@@ -4,7 +4,8 @@ import { prismaExtension } from './customPrismaExtension';
 
 export default defineConfig({
   runtime: 'node-22',
-  project: 'proj_lhxjliiqgcdyqbgtucda',
+  // Operative: allow overriding the Trigger.dev project for self-hosted forks
+  project: process.env.TRIGGER_PROJECT_REF_APP ?? 'proj_lhxjliiqgcdyqbgtucda',
   logLevel: 'log',
   // PrismaInstrumentation was emitting a `prisma:client:operation` span for
   // every query, drowning out our own task logs. We rely on per-task

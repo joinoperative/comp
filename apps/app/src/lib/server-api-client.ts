@@ -1,6 +1,8 @@
 import { headers } from 'next/headers';
+import { getApiBaseUrl } from '@/lib/api-server';
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3333';
+// Operative: shared with apps/app/src/lib/api-server.ts so this also honours BACKEND_API_URL
+const API_BASE_URL = getApiBaseUrl();
 
 interface ApiResponse<T = unknown> {
   data?: T;

@@ -9,15 +9,23 @@ initBotId({
   protect: [{ path: '/api/chat', method: 'POST' }],
 });
 
+// Operative: an omitted Docker build ARG materialises NEXT_PUBLIC_SENTRY_DSN as '' (empty
+// string), not undefined. An omitted build arg must behave exactly like upstream (i.e. NOT
+// disable Sentry) — so empty and unset are treated identically here (`||`, not `??`) and both
+// fall back to upstream's DSN. To actually disable Sentry for a deployment that doesn't want
+// it, set the explicit NEXT_PUBLIC_SENTRY_DISABLED="true" build arg/env var instead of relying
+// on an empty DSN to do it implicitly.
+const sentryDisabled = process.env.NEXT_PUBLIC_SENTRY_DISABLED === 'true';
+
 Sentry.init({
   dsn:
-    process.env.NEXT_PUBLIC_SENTRY_DSN ??
+    process.env.NEXT_PUBLIC_SENTRY_DSN ||
     'https://331f1c3d4b08e9352dd1a2621e1ae845@o4509214247813120.ingest.us.sentry.io/4511304630927360',
 
   // Only report from production. NEXT_PUBLIC_VERCEL_ENV is inlined at build time
   // per Vercel deployment; preview/dev builds (or a missing var) keep Sentry
   // disabled — a no-op, never an error — to avoid noise and quota burn.
-  enabled: process.env.NEXT_PUBLIC_VERCEL_ENV === 'production',
+  enabled: !sentryDisabled && process.env.NEXT_PUBLIC_VERCEL_ENV === 'production',
 
   integrations: [
     // Add `data-sentry-mask` (or `.sentry-mask`) to any element rendering

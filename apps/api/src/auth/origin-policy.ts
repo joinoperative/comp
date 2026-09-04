@@ -81,10 +81,40 @@ export function isCompExtensionOriginAllowedForRequest(params: {
   );
 }
 
+// Operative: AUTH_TRUSTED_ORIGINS entries are matched with Array.includes() (exact string
+// match) above, which never matches a documented wildcard entry like 'https://*.example.com'.
+// Parse and match those explicitly: same protocol, hostname is exactly the suffix or a
+// subdomain of it. (An Origin header never has a path, so there's nothing to match there.)
+function isWildcardOriginMatch(pattern: string, origin: string): boolean {
+  const patternMatch = pattern.match(/^(https?):\/\/\*\.(.+)$/);
+  if (!patternMatch) return false;
+  const [, protocol, suffixHost] = patternMatch;
+
+  try {
+    const url = new URL(origin);
+    if (url.protocol !== `${protocol}:`) return false;
+    return url.hostname === suffixHost || url.hostname.endsWith(`.${suffixHost}`);
+  } catch {
+    return false;
+  }
+}
+
 export function isStaticTrustedOrigin(origin: string): boolean {
   const trustedOrigins = getTrustedOrigins();
   if (trustedOrigins.includes(origin)) {
     return true;
+  }
+
+  if (trustedOrigins.some((entry) => isWildcardOriginMatch(entry, origin))) {
+    return true;
+  }
+
+  // Operative: once AUTH_TRUSTED_ORIGINS is configured (self-hosted forks), only the entries
+  // above (including any wildcards among them, matched just above) are trusted — skip the
+  // hardcoded trycomp.ai/trust.inc suffix match below, which only makes sense for the
+  // unconfigured (upstream) default list.
+  if (process.env.AUTH_TRUSTED_ORIGINS) {
+    return false;
   }
 
   try {

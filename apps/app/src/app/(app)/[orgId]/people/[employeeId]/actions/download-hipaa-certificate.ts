@@ -1,7 +1,7 @@
 'use server';
 
 import { authActionClient } from '@/actions/safe-action';
-import { env } from '@/env.mjs';
+import { getApiBaseUrl } from '@/lib/api-server';
 import { headers } from 'next/headers';
 import { z } from 'zod';
 
@@ -29,10 +29,8 @@ export const downloadHipaaCertificate = authActionClient
       );
     }
 
-    const apiUrl =
-      env.NEXT_PUBLIC_API_URL ||
-      process.env.API_BASE_URL ||
-      'http://localhost:3333';
+    // Operative: shared with apps/app/src/lib/api-server.ts so this also honours BACKEND_API_URL
+    const apiUrl = getApiBaseUrl();
 
     const headerStore = await headers();
     const cookieHeader = headerStore.get('cookie');

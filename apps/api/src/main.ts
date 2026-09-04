@@ -164,7 +164,9 @@ async function bootstrap(): Promise<void> {
     .build();
   const document: OpenAPIObject = SwaggerModule.createDocument(app, config);
 
-  applyPublicOpenApiMetadata(document);
+  // Operative: pass the runtime server URL so self-hosted Swagger's "Try it out" targets this
+  // instance instead of being overwritten back to the upstream api.trycomp.ai default.
+  applyPublicOpenApiMetadata(document, baseUrl);
 
   // Setup Swagger UI at /api/docs
   SwaggerModule.setup('api/docs', app, document, {

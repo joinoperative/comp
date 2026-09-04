@@ -1,4 +1,5 @@
 import { auth } from '@/utils/auth';
+import { getApiBaseUrl } from '@/lib/api-server';
 import { db } from '@db/server';
 import { NextRequest, NextResponse } from 'next/server';
 
@@ -50,10 +51,8 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const apiUrl =
-      process.env.NEXT_PUBLIC_API_URL ||
-      process.env.API_BASE_URL ||
-      'http://localhost:3333';
+    // Operative: shared with apps/app/src/lib/api-server.ts so this also honours BACKEND_API_URL
+    const apiUrl = getApiBaseUrl();
 
     // Forward the user's session cookies to the NestJS API for authentication
     const cookieHeader = req.headers.get('cookie') || '';

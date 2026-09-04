@@ -13,6 +13,16 @@ import {
   updateOrganizationPolicies,
 } from './onboard-organization-helpers';
 
+// Operative: this task runs on the Trigger.dev worker (a separate service on Trigger Cloud) and
+// calls the app's own /api/revalidate/path route — not a link for a human to click — so it must
+// prefer BACKEND_APP_URL (an internal URL) over the public app URL. The original expression
+// (NEXT_PUBLIC_BETTER_AUTH_URL) comes immediately after BACKEND_APP_URL so behaviour is
+// unchanged for deployments that only set that; NEXT_PUBLIC_APP_URL is a last-resort fallback.
+const getRevalidateBaseUrl = () =>
+  process.env.BACKEND_APP_URL ||
+  process.env.NEXT_PUBLIC_BETTER_AUTH_URL ||
+  process.env.NEXT_PUBLIC_APP_URL;
+
 // v4 queues must be declared in advance
 const onboardOrgQueue = queue({ name: 'onboard-organization', concurrencyLimit: 50 });
 
@@ -235,7 +245,7 @@ export const onboardOrganization = task({
     try {
       logger.info(`Revalidating path ${process.env.NEXT_PUBLIC_BETTER_AUTH_URL}/${organizationId}`);
       const revalidateResponse = await axios.post(
-        `${process.env.NEXT_PUBLIC_BETTER_AUTH_URL}/api/revalidate/path`,
+        `${getRevalidateBaseUrl()}/api/revalidate/path`,
         {
           path: `${process.env.NEXT_PUBLIC_BETTER_AUTH_URL}/${organizationId}`,
           secret: process.env.REVALIDATION_SECRET,

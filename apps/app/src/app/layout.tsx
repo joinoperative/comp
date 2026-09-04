@@ -17,7 +17,10 @@ export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
 export const metadata: Metadata = {
-  metadataBase: new URL('https://app.trycomp.ai'),
+  // Operative: self-hosted deployments shouldn't advertise/canonicalize to app.trycomp.ai.
+  // Reads process.env directly (not env.mjs) to match the existing NEXT_PUBLIC_APP_URL
+  // convention elsewhere in the app (e.g. lib/unsubscribe.ts, trigger/tasks/task/*).
+  metadataBase: new URL(process.env.NEXT_PUBLIC_APP_URL || 'https://app.trycomp.ai'),
   title: 'Comp AI | Automate SOC 2, ISO 27001 and GDPR compliance with AI.',
   description: 'Automate SOC 2, ISO 27001 and GDPR compliance with AI.',
   twitter: {
@@ -39,7 +42,8 @@ export const metadata: Metadata = {
   openGraph: {
     title: 'Comp AI | Automate SOC 2, ISO 27001 and GDPR compliance with AI.',
     description: 'Automate SOC 2, ISO 27001 and GDPR compliance with AI.',
-    url: 'https://app.trycomp.ai',
+    // Operative: consistent with metadataBase above
+    url: process.env.NEXT_PUBLIC_APP_URL || 'https://app.trycomp.ai',
     siteName: 'Comp AI',
     images: [
       {

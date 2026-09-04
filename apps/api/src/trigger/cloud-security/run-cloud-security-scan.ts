@@ -60,7 +60,10 @@ export const runCloudSecurityScan = task({
         },
       );
 
-      const apiUrl = process.env.BASE_URL || 'http://localhost:3333';
+      // Operative: this task runs on the Trigger.dev worker (a separate service on Trigger
+      // Cloud), so it must prefer BACKEND_API_URL (an internal URL) over BASE_URL, the API's
+      // public URL.
+      const apiUrl = process.env.BACKEND_API_URL || process.env.BASE_URL || 'http://localhost:3333';
       const headers = {
         'Content-Type': 'application/json',
         'x-service-token': process.env.SERVICE_TOKEN_TRIGGER!,

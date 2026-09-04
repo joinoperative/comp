@@ -2,7 +2,10 @@ import { render } from '@react-email/render';
 import { logger } from '@trigger.dev/sdk';
 import type { ReactElement } from 'react';
 
+// Operative: this task runs on the Trigger.dev worker (a separate service on Trigger Cloud), so
+// it must prefer BACKEND_API_URL (an internal URL) over the public NEXT_PUBLIC_API_URL.
 const getApiBaseUrl = () =>
+  process.env.BACKEND_API_URL ||
   process.env.NEXT_PUBLIC_API_URL ||
   process.env.API_BASE_URL ||
   'http://localhost:3333';

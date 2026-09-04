@@ -13,6 +13,25 @@ interface CallOptions {
 }
 
 /**
+ * Operative: base URL for server-side calls to the internal NestJS API. Prefers
+ * BACKEND_API_URL (a private/internal URL, e.g. behind IAP) over the public
+ * NEXT_PUBLIC_API_URL, and preserves API_BASE_URL — a second, unrelated fallback some
+ * server-only callers (certificate/export routes) already used — as the last fallback
+ * before localhost, so deployments that only set API_BASE_URL keep working. Shared by
+ * every server-only caller under apps/app/src (route handlers, 'use server' actions,
+ * files importing next/headers) — do not use this from client components; see
+ * apps/app/src/lib/api-client.ts instead.
+ */
+export function getApiBaseUrl(): string {
+  return (
+    process.env.BACKEND_API_URL ||
+    env.NEXT_PUBLIC_API_URL ||
+    process.env.API_BASE_URL ||
+    'http://localhost:3333'
+  );
+}
+
+/**
  * Server-side API client for calling our internal NestJS API from server components.
  * Forwards cookies for authentication — API resolves the session (including
  * activeOrganizationId) via better-auth, so no X-Organization-Id header is needed.
@@ -22,7 +41,7 @@ async function call<T = unknown>(
   options: CallOptions = {},
 ): Promise<ApiResponse<T>> {
   const { method = 'GET', body } = options;
-  const baseUrl = env.NEXT_PUBLIC_API_URL || 'http://localhost:3333';
+  const baseUrl = getApiBaseUrl();
 
   const requestHeaders: Record<string, string> = {
     'Content-Type': 'application/json',

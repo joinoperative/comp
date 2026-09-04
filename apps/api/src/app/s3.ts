@@ -28,6 +28,17 @@ const APP_AWS_ACCESS_KEY_ID = process.env.APP_AWS_ACCESS_KEY_ID;
 const APP_AWS_SECRET_ACCESS_KEY = process.env.APP_AWS_SECRET_ACCESS_KEY;
 const APP_AWS_ENDPOINT = process.env.APP_AWS_ENDPOINT;
 
+// Operative: host of the configured S3-compatible endpoint (e.g. GCS), used to allow-list URLs
+// produced with a non-AWS endpoint/forcePathStyle. Undefined (and inert) when unset.
+const APP_AWS_ENDPOINT_HOST = (() => {
+  if (!APP_AWS_ENDPOINT) return undefined;
+  try {
+    return new URL(APP_AWS_ENDPOINT).host.toLowerCase();
+  } catch {
+    return undefined;
+  }
+})();
+
 export const BUCKET_NAME = process.env.APP_AWS_BUCKET_NAME;
 export const APP_AWS_QUESTIONNAIRE_UPLOAD_BUCKET =
   process.env.APP_AWS_QUESTIONNAIRE_UPLOAD_BUCKET;
@@ -77,12 +88,22 @@ export const s3Client = s3ClientInstance;
 function isValidS3Host(host: string): boolean {
   const normalizedHost = host.toLowerCase();
 
-  if (!normalizedHost.endsWith('.amazonaws.com')) {
-    return false;
+  if (normalizedHost.endsWith('.amazonaws.com')) {
+    return /^([\w.-]+\.)?(s3|s3-[\w-]+|s3-website[\w.-]+|s3-accesspoint|s3-control)(\.[\w-]+)?\.amazonaws\.com$/.test(
+      normalizedHost,
+    );
   }
 
-  return /^([\w.-]+\.)?(s3|s3-[\w-]+|s3-website[\w.-]+|s3-accesspoint|s3-control)(\.[\w-]+)?\.amazonaws\.com$/.test(
-    normalizedHost,
+  // Operative: also accept the configured custom S3-compatible endpoint (e.g. GCS via
+  // storage.googleapis.com), in both path-style (<endpoint-host>) and virtual-hosted
+  // (<bucket>.<endpoint-host>) form. Only active when APP_AWS_ENDPOINT is set, so
+  // upstream/AWS-only behaviour is unchanged when it isn't.
+  if (!APP_AWS_ENDPOINT_HOST) {
+    return false;
+  }
+  return (
+    normalizedHost === APP_AWS_ENDPOINT_HOST ||
+    normalizedHost.endsWith(`.${APP_AWS_ENDPOINT_HOST}`)
   );
 }
 
@@ -103,7 +124,21 @@ export function extractS3KeyFromUrl(url: string): string {
       throw new Error('Invalid URL: Not a valid S3 endpoint');
     }
 
-    const key = decodeURIComponent(parsedUrl.pathname.substring(1));
+    let key = decodeURIComponent(parsedUrl.pathname.substring(1));
+
+    // Operative: path-style URLs against the configured endpoint
+    // (https://<endpoint-host>/<bucket>/<key>) put the bucket name as the first path segment;
+    // strip it so only the object key remains. Virtual-hosted URLs
+    // (https://<bucket>.<endpoint-host>/<key>) already have the bucket in the host, so the
+    // full path is the key, same as AWS's virtual-hosted-style — don't strip there.
+    // NOTE: this split happens after decodeURIComponent, so a key containing an encoded '%2F'
+    // (a literal slash inside the key) will be split incorrectly. Pre-existing limitation,
+    // not introduced by this change.
+    const normalizedHost = parsedUrl.host.toLowerCase();
+    if (APP_AWS_ENDPOINT_HOST && normalizedHost === APP_AWS_ENDPOINT_HOST) {
+      const slashIndex = key.indexOf('/');
+      key = slashIndex === -1 ? '' : key.substring(slashIndex + 1);
+    }
 
     if (key.includes('../') || key.includes('..\\')) {
       throw new Error('Invalid S3 key: Path traversal detected');

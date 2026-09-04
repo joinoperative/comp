@@ -7,6 +7,16 @@ import {
   type PolicyContext,
 } from './onboard-organization-helpers';
 
+// Operative: this task runs on the Trigger.dev worker (a separate service on Trigger Cloud) and
+// calls the app's own /api/revalidate/path route — not a link for a human to click — so it must
+// prefer BACKEND_APP_URL (an internal URL) over the public app URL. The original expression
+// (NEXT_PUBLIC_BETTER_AUTH_URL) comes immediately after BACKEND_APP_URL so behaviour is
+// unchanged for deployments that only set that; NEXT_PUBLIC_APP_URL is a last-resort fallback.
+const getRevalidateBaseUrl = () =>
+  process.env.BACKEND_APP_URL ||
+  process.env.NEXT_PUBLIC_BETTER_AUTH_URL ||
+  process.env.NEXT_PUBLIC_APP_URL;
+
 // Queues
 const riskMitigationQueue = queue({ name: 'risk-mitigations', concurrencyLimit: 50 });
 const riskMitigationFanoutQueue = queue({ name: 'risk-mitigations-fanout', concurrencyLimit: 50 });
@@ -104,7 +114,7 @@ export const generateRiskMitigation = task({
     // Revalidate only the risk detail page in the individual job
     try {
       const detailPath = `/${organizationId}/risk/${riskId}`;
-      const url = `${process.env.NEXT_PUBLIC_BETTER_AUTH_URL}/api/revalidate/path`;
+      const url = `${getRevalidateBaseUrl()}/api/revalidate/path`;
       logger.info('url', { url });
       await axios.post(
         url,
@@ -178,7 +188,7 @@ export const generateRiskMitigationsForOrg = task({
     try {
       const listPath = `/${organizationId}/risk`;
       await Promise.all([
-        axios.post(`${process.env.NEXT_PUBLIC_BETTER_AUTH_URL}/api/revalidate/path`, {
+        axios.post(`${getRevalidateBaseUrl()}/api/revalidate/path`, {
           path: listPath,
           secret: process.env.REVALIDATION_SECRET,
         }),

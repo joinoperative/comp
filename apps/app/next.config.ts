@@ -7,6 +7,25 @@ import './src/env.mjs';
 
 const isStandalone = process.env.NEXT_OUTPUT_STANDALONE === 'true';
 
+// Operative: Next only consults serverActions.allowedOrigins as a fallback, after its own
+// same-origin check against the Host/X-Forwarded-Host header fails — at that point it's
+// matched against the request's Origin header, so entries must be bare hostnames (optionally
+// with a wildcard subdomain or port), not full origin URLs with a scheme.
+const toAllowedOriginHost = (value: string): string => {
+  // A bare 'host:port' (no scheme) is NOT safe to pass to new URL(): WHATWG parses the part
+  // before the first ':' as a scheme (e.g. new URL('localhost:4000').host === '' — it treats
+  // 'localhost:' as an opaque-path scheme, not a hostname+port), silently producing an empty
+  // string instead of throwing. Only parse values that actually look like a full origin URL.
+  if (!value.includes('://')) {
+    return value;
+  }
+  try {
+    return new URL(value).host;
+  } catch {
+    return value;
+  }
+};
+
 const workspaceRoot = path.join(__dirname, '..', '..');
 
 const config: NextConfig = {
@@ -63,11 +82,13 @@ const config: NextConfig = {
       // NOTE: Attachment uploads may be sent as base64 strings, which increases payload size.
       // Keep this above the user-facing max file size.
       bodySizeLimit: '150mb',
+      // Operative: app.trycomp.ai is only included when NEXT_PUBLIC_APP_URL is unset — a
+      // custom deployment should trust its own host (+ portal), not the upstream one too.
       allowedOrigins:
         process.env.NODE_ENV === 'production'
-          ? ([process.env.NEXT_PUBLIC_PORTAL_URL, 'https://app.trycomp.ai'].filter(
-              Boolean,
-            ) as string[])
+          ? ([process.env.NEXT_PUBLIC_PORTAL_URL, process.env.NEXT_PUBLIC_APP_URL || 'app.trycomp.ai']
+              .filter(Boolean)
+              .map((origin) => toAllowedOriginHost(origin as string)) as string[])
           : undefined,
     },
     authInterrupts: true,

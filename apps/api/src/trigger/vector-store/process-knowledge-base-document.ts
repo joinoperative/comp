@@ -21,8 +21,13 @@ function createS3Client(): S3Client {
     );
   }
 
+  // Operative: mirror apps/api/src/app/s3.ts so APP_AWS_ENDPOINT/forcePathStyle apply here too
+  const endpoint = process.env.APP_AWS_ENDPOINT;
+
   return new S3Client({
     region,
+    endpoint: endpoint || undefined,
+    forcePathStyle: !!endpoint,
     credentials: {
       accessKeyId,
       secretAccessKey,

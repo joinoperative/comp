@@ -116,4 +116,10 @@ export const env = createEnv({
   },
 
   skipValidation: !!process.env.CI || !!process.env.SKIP_ENV_VALIDATION,
+  // Operative: Docker `ENV X=$X` materialises an omitted build ARG as an empty string, not
+  // unset. Without this, an empty NEXT_PUBLIC_APP_URL etc. would pass validation as a valid
+  // (empty) string instead of falling back to the `??`/`||` defaults callers expect. Safe for
+  // existing required vars too — an empty string was never a valid AUTH_SECRET/DATABASE_URL/etc.,
+  // so this just turns a silent bad-value pass into a clearer "missing required var" error.
+  emptyStringAsUndefined: true,
 });

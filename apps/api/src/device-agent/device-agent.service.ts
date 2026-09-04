@@ -73,8 +73,11 @@ export class DeviceAgentService {
   constructor() {
     this.fleetBucketName =
       process.env.FLEET_AGENT_BUCKET_NAME || process.env.APP_AWS_BUCKET_NAME!;
+    // Operative: mirror apps/api/src/app/s3.ts so APP_AWS_ENDPOINT/forcePathStyle apply here too
     this.s3Client = new S3Client({
       region: process.env.APP_AWS_REGION || 'us-east-1',
+      endpoint: process.env.APP_AWS_ENDPOINT || undefined,
+      forcePathStyle: !!process.env.APP_AWS_ENDPOINT,
       credentials: {
         accessKeyId: process.env.APP_AWS_ACCESS_KEY_ID!,
         secretAccessKey: process.env.APP_AWS_SECRET_ACCESS_KEY!,

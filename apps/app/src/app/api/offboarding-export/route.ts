@@ -1,13 +1,12 @@
+import { getApiBaseUrl } from '@/lib/api-server';
 import { NextRequest, NextResponse } from 'next/server';
 
 export async function GET(request: NextRequest) {
   const memberId = request.nextUrl.searchParams.get('memberId');
   const exportAll = request.nextUrl.searchParams.get('all') === 'true';
 
-  const apiUrl =
-    process.env.NEXT_PUBLIC_API_URL ||
-    process.env.API_BASE_URL ||
-    'http://localhost:3333';
+  // Operative: shared with apps/app/src/lib/api-server.ts so this also honours BACKEND_API_URL
+  const apiUrl = getApiBaseUrl();
 
   const cookieHeader = request.headers.get('cookie') ?? '';
   const authorizationHeader = request.headers.get('authorization');

@@ -21,7 +21,10 @@ services:
       target: migrator
     env_file:
       - packages/db/.env
-    command: sh -lc "bunx prisma generate --schema=node_modules/@trycompai/db/dist/schema.prisma && bun packages/db/prisma/seed/seed.js"
+    # Operative: the migrator image's Prisma client is generated at build time now (rebuilt
+    # from the workspace's own packages/db — see the Dockerfile's migrator stage), and its
+    # WORKDIR is packages/db, so this only needs to run the (TypeScript) seed script itself.
+    command: sh -lc "bun prisma/seed/seed.ts"
     logging: *default-logging
   app:
     build:

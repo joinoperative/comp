@@ -3,8 +3,22 @@ import { HybridAuthGuard } from '../auth/hybrid-auth.guard';
 import { PermissionGuard } from '../auth/permission.guard';
 import { ActingUserResolver } from '../auth/acting-user.service';
 import type { AuthContext, AuthenticatedRequest } from '../auth/types';
-import { PoliciesController } from './policies.controller';
+import { PoliciesController, resolvePolicyS3Client } from './policies.controller';
 import { PoliciesService } from './policies.service';
+
+// Operative: deterministic control over the shared S3 client (rather than whatever
+// apps/api/src/app/s3.ts's real credential-check logic resolves to in this test environment)
+// for the resolvePolicyS3Client() tests at the bottom of this file.
+jest.mock('../app/s3', () => ({ s3Client: null }));
+
+// Operative: capture S3Client's constructor args instead of hitting real AWS SDK internals.
+jest.mock('@aws-sdk/client-s3', () => {
+  const actual = jest.requireActual('@aws-sdk/client-s3');
+  return {
+    ...actual,
+    S3Client: jest.fn().mockImplementation((config: unknown) => ({ __mockConfig: config })),
+  };
+});
 
 jest.mock('../auth/auth.server', () => ({
   auth: {
@@ -1120,5 +1134,46 @@ describe('PoliciesController', () => {
         controller.getPolicyEvidenceTasks('pol_404', orgId, mockAuthContext),
       ).rejects.toThrow('Policy not found');
     });
+  });
+});
+
+describe('resolvePolicyS3Client', () => {
+  const ORIGINAL_ENV = process.env;
+  const { S3Client } = require('@aws-sdk/client-s3');
+
+  afterEach(() => {
+    process.env = ORIGINAL_ENV;
+    S3Client.mockClear();
+  });
+
+  it('falls back to a fresh S3Client (upstream construction) when the shared client is null', () => {
+    // ../app/s3 is mocked to { s3Client: null } for this whole file, so this always exercises
+    // the fallback branch regardless of APP_AWS_ENDPOINT.
+    process.env = { ...ORIGINAL_ENV, APP_AWS_ENDPOINT: 'https://storage.googleapis.com', AWS_REGION: 'eu-west-1' };
+
+    const client = resolvePolicyS3Client(S3Client);
+
+    expect(S3Client).toHaveBeenCalledTimes(1);
+    expect(S3Client).toHaveBeenCalledWith({ region: 'eu-west-1' });
+    expect((client as unknown as { __mockConfig: Record<string, unknown> }).__mockConfig).toEqual(
+      { region: 'eu-west-1' },
+    );
+  });
+
+  it('falls back to the upstream us-east-1 default when AWS_REGION is also unset', () => {
+    process.env = { ...ORIGINAL_ENV, APP_AWS_ENDPOINT: undefined, AWS_REGION: undefined };
+
+    resolvePolicyS3Client(S3Client);
+
+    expect(S3Client).toHaveBeenCalledWith({ region: 'us-east-1' });
+  });
+
+  it('does not use the shared client even when APP_AWS_ENDPOINT is set, since it is null here', () => {
+    process.env = { ...ORIGINAL_ENV, APP_AWS_ENDPOINT: 'https://storage.googleapis.com' };
+
+    resolvePolicyS3Client(S3Client);
+
+    // A shared, endpoint-configured client would never call `new S3Client(...)` at all.
+    expect(S3Client).toHaveBeenCalledTimes(1);
   });
 });

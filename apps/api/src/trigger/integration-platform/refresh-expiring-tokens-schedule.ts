@@ -23,9 +23,13 @@ export const refreshExpiringTokensSchedule = schedules.task({
       lastRun: payload.lastTimestamp,
     });
 
-    const apiUrl = process.env.API_URL;
+    // Operative: this task runs on the Trigger.dev worker (a separate service on Trigger
+    // Cloud), so it must prefer BACKEND_API_URL (an internal URL) over API_URL.
+    const apiUrl = process.env.BACKEND_API_URL || process.env.API_URL;
     if (!apiUrl) {
-      logger.error('API_URL environment variable is not set — cannot refresh tokens');
+      logger.error(
+        'Neither BACKEND_API_URL nor API_URL environment variable is set — cannot refresh tokens',
+      );
       return { refreshed: 0, failed: 0, skipped: 0 };
     }
 

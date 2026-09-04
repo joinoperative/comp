@@ -299,12 +299,20 @@ function applyMcpToolNames(
   }
 }
 
-export function applyPublicOpenApiMetadata(document: OpenAPIObject): void {
+// Operative: `serverUrl` defaults to the upstream PUBLIC_SERVER_URL so the committed public
+// spec (generated offline by gen-openapi.spec.ts / openapi-docs.spec.ts, which call this with
+// no second argument) is unaffected; main.ts passes its runtime BASE_URL-derived server URL so
+// self-hosted Swagger's "Try it out" targets the actual running instance instead of always
+// being overwritten back to api.trycomp.ai.
+export function applyPublicOpenApiMetadata(
+  document: OpenAPIObject,
+  serverUrl: string = PUBLIC_SERVER_URL,
+): void {
   document.info.title = PUBLIC_OPENAPI_TITLE;
   document.info.description = PUBLIC_OPENAPI_DESCRIPTION;
   document.servers = [
     {
-      url: PUBLIC_SERVER_URL,
+      url: serverUrl,
       description: 'Production API Server',
     },
   ];

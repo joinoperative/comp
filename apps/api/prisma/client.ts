@@ -24,6 +24,21 @@ function isLocalhostUrl(connectionString: string): boolean {
   }
 }
 
+// Operative: parse a positive-integer pool-size env var, ignoring (with a console warning)
+// anything that isn't one instead of passing NaN/0/a negative number through to pg.Pool.
+function parsePositiveIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    console.warn(
+      `[db] Ignoring invalid ${name}="${raw}" (must be a positive integer); using default ${fallback}.`,
+    );
+    return fallback;
+  }
+  return parsed;
+}
+
 function createPrismaClient(): PrismaClient {
   const rawUrl = process.env.DATABASE_URL!;
   const isLocalhost = isLocalhostUrl(rawUrl);
@@ -61,7 +76,14 @@ function createPrismaClient(): PrismaClient {
   }
   // Strip sslmode from the connection string to avoid conflicts with the explicit ssl option
   const url = ssl !== undefined ? stripSslMode(rawUrl) : rawUrl;
-  const adapter = new PrismaPg({ connectionString: url, ssl });
+  // Operative: cap the pg pool for small Cloud SQL tiers (e.g. db-g1-small). Defaults
+  // (10, 10s) match pg.Pool's own built-in defaults, so behaviour is unchanged when unset.
+  const adapter = new PrismaPg({
+    connectionString: url,
+    ssl,
+    max: parsePositiveIntEnv('DB_POOL_MAX', 10),
+    idleTimeoutMillis: parsePositiveIntEnv('DB_POOL_IDLE_MS', 10000),
+  });
   return new PrismaClient({
     adapter,
     transactionOptions: {

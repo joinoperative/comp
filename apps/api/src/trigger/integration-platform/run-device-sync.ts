@@ -1,6 +1,8 @@
 import { logger, tags, task } from '@trigger.dev/sdk';
 
-const API_BASE_URL = process.env.BASE_URL || 'http://localhost:3333';
+// Operative: this task runs on the Trigger.dev worker (a separate service on Trigger Cloud), so
+// it must prefer BACKEND_API_URL (an internal URL) over BASE_URL, the API's public URL.
+const API_BASE_URL = process.env.BACKEND_API_URL || process.env.BASE_URL || 'http://localhost:3333';
 
 /**
  * Trigger.dev task that runs device sync for a single org+connection.

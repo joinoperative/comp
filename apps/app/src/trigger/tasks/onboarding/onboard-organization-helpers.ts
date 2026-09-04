@@ -369,6 +369,14 @@ function combineSentencesWithCitations({
 }
 
 
+// Operative: this task runs on the Trigger.dev worker (a separate service on Trigger Cloud) and
+// calls the app's own /api/revalidate/path route — not a link for a human to click — so it must
+// prefer BACKEND_APP_URL (an internal URL) over the public app URL. The original expression
+// (BETTER_AUTH_URL) comes immediately after BACKEND_APP_URL so behaviour is unchanged for
+// deployments that only set that; NEXT_PUBLIC_APP_URL is a last-resort fallback.
+const getRevalidateBaseUrl = () =>
+  process.env.BACKEND_APP_URL || process.env.BETTER_AUTH_URL || process.env.NEXT_PUBLIC_APP_URL;
+
 /**
  * Revalidates the organization path for cache busting
  */
@@ -376,7 +384,7 @@ export async function revalidateOrganizationPath(organizationId: string): Promis
   try {
     logger.info(`Revalidating path ${process.env.BETTER_AUTH_URL}/${organizationId}`);
     const revalidateResponse = await axios.post(
-      `${process.env.BETTER_AUTH_URL}/api/revalidate/path`,
+      `${getRevalidateBaseUrl()}/api/revalidate/path`,
       {
         path: `${process.env.BETTER_AUTH_URL}/${organizationId}`,
         secret: process.env.REVALIDATION_SECRET,
@@ -848,8 +856,13 @@ async function triggerVendorRiskAssessmentsViaApi(params: {
     return;
   }
 
+  // Operative: this task runs on the Trigger.dev worker (a separate service on Trigger Cloud),
+  // so it must prefer BACKEND_API_URL (an internal URL) over the public NEXT_PUBLIC_API_URL.
   const apiBaseUrl =
-    process.env.NEXT_PUBLIC_API_URL || process.env.API_BASE_URL || 'http://localhost:3333';
+    process.env.BACKEND_API_URL ||
+    process.env.NEXT_PUBLIC_API_URL ||
+    process.env.API_BASE_URL ||
+    'http://localhost:3333';
   const token = process.env.SERVICE_TOKEN_TRIGGER;
 
   // Sanitize vendor websites - only send valid URLs or null

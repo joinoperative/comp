@@ -1,4 +1,4 @@
-import { env } from '@/env.mjs';
+import { getApiBaseUrl } from '@/lib/api-server';
 import { type InferUITools, tool } from 'ai';
 import { z } from 'zod';
 
@@ -18,7 +18,8 @@ async function apiCall<T = unknown>({
   endpoint: string;
   cookieHeader: string;
 }): Promise<T> {
-  const baseUrl = env.NEXT_PUBLIC_API_URL || 'http://localhost:3333';
+  // Operative: shared with apps/app/src/lib/api-server.ts so this also honours BACKEND_API_URL
+  const baseUrl = getApiBaseUrl();
   const response = await fetch(`${baseUrl}${endpoint}`, {
     method: 'GET',
     headers: {

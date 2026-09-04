@@ -33,7 +33,11 @@ export async function proxy(request: NextRequest) {
       request.cookies.get('better-auth.session_token')?.value ||
       request.cookies.get('__Secure-staging.session_token')?.value ||
       request.cookies.get('staging.session_token')?.value ||
-      request.cookies.get('local.session_token')?.value;
+      request.cookies.get('local.session_token')?.value ||
+      // Operative: better-auth emits this name (cookiePrefix 'local' + __Secure- prefix) when
+      // AUTH_COOKIE_DOMAIN is unset but the app is served over HTTPS — without it, a valid
+      // session looks logged-out here and the proxy redirect-loops to the login page.
+      request.cookies.get('__Secure-local.session_token')?.value;
     const hasToken = Boolean(sessionToken);
     const nextUrl = request.nextUrl;
     const requestHeaders = new Headers(request.headers);
