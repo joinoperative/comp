@@ -20,7 +20,9 @@ FROM oven/bun:1.3.4 AS deps
 WORKDIR /app
 
 # Copy workspace configuration
-COPY package.json bun.lock ./
+# bunfig.toml carries `[install] linker = "hoisted"`; without it Bun 1.3 uses the
+# isolated layout and tsc declaration emit breaks (TS2742 paths into node_modules/.bun).
+COPY package.json bun.lock bunfig.toml ./
 
 # All workspace package.json files (see the manifests stage above)
 COPY --from=manifests /out/ ./

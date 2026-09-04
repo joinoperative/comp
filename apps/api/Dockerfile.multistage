@@ -6,7 +6,8 @@ FROM oven/bun:1.3.4 AS deps
 WORKDIR /app
 
 # Copy root workspace config
-COPY package.json bun.lock ./
+# bunfig.toml carries `[install] linker = "hoisted"` (Bun 1.3 defaults to isolated).
+COPY package.json bun.lock bunfig.toml ./
 
 # Strip root package.json to only keep workspaces config.
 # The root has frontend deps (design-system, react-dnd, sharp, semantic-release, etc.)
@@ -46,6 +47,7 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/package.json ./package.json
 COPY --from=deps /app/bun.lock ./bun.lock
+COPY --from=deps /app/bunfig.toml ./bunfig.toml
 
 # Copy workspace packages source (node_modules excluded by .dockerignore,
 # but COPY replaces directories so workspace node_modules from deps get wiped)
