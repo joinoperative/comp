@@ -56,6 +56,6 @@ export interface FalconDevice {
   status?: string;
   last_seen?: string;
   first_seen?: string;
-  /** Set when the sensor is running degraded (RFM). */
-  reduced_functionality_mode?: string;
+  /** 'yes' when the sensor is running degraded (RFM), 'no' when healthy. */
+  reduced_functionality_mode?: 'yes' | 'no' | string;
 }

@@ -79,18 +79,27 @@ export const sensorCoverageCheck: IntegrationCheck = {
     for (let i = 0; i < deviceIds.length; i += DEVICE_DETAIL_BATCH_SIZE) {
       const batch = deviceIds.slice(i, i + DEVICE_DETAIL_BATCH_SIZE);
 
+      // Falcon expects `ids` repeated once per device (?ids=a&ids=b), not a
+      // single comma-joined value — it reads a comma-joined string as one id and
+      // rejects it with "invalid device id". ctx.fetch's `params` is a
+      // Record<string, string> and so cannot express a repeated key, so the
+      // query string is built onto the path instead.
+      const idsQuery = batch.map((id) => `ids=${encodeURIComponent(id)}`).join('&');
+
       const details = await ctx.fetch<FalconEnvelope<FalconDevice[]>>(
-        '/devices/entities/devices/v2',
+        `/devices/entities/devices/v2?${idsQuery}`,
         {
           baseUrl,
           headers,
-          params: { ids: batch.join(',') },
         },
       );
 
       for (const device of details.resources ?? []) {
         const label = device.hostname || device.device_id;
-        const inReducedMode = Boolean(device.reduced_functionality_mode);
+        // Falcon returns this as the string 'yes' or 'no' — never a boolean — so
+        // a truthiness test flags every device, including the healthy ones that
+        // report 'no'.
+        const inReducedMode = device.reduced_functionality_mode === 'yes';
         const isHealthy = device.status === 'normal' && !inReducedMode;
 
         const evidence = {
