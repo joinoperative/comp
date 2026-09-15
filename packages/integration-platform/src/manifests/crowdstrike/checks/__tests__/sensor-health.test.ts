@@ -9,6 +9,7 @@ const DAY_MS = 86_400_000;
 interface Result {
   resourceId: string;
   title: string;
+  remediation?: string;
   evidence?: Record<string, unknown>;
 }
 
@@ -112,6 +113,7 @@ async function runCheck(scenario: Scenario = {}): Promise<RunResult> {
       failed.push({
         resourceId: result.resourceId ?? '',
         title: result.title,
+        remediation: result.remediation,
         evidence: result.evidence as Record<string, unknown> | undefined,
       });
     },
@@ -405,6 +407,28 @@ describe('read failures never look like success', () => {
 
     expect(passed).toHaveLength(0);
     expect(failed[0]!.resourceId).toBe('tenant');
+  });
+});
+
+describe('misconfiguration is not reported as a transient read failure', () => {
+  it('tells the user to reconnect when the Falcon cloud is wrong', async () => {
+    // Routing this through remediationForReadFailure yields "re-run the check;
+    // if it keeps failing, contact support" — advice that can never fix a wrong
+    // region, because the stored value is the problem.
+    const { passed, failed } = await runCheck({ cloud: 'mars-1', devices: [] });
+
+    expect(passed).toHaveLength(0);
+    expect(failed).toHaveLength(1);
+    expect(failed[0]!.remediation).toContain('Reconnect');
+    expect(failed[0]!.remediation).not.toContain('Re-run the check');
+    expect(failed[0]!.evidence?.configError).toContain('Unknown CrowdStrike Falcon cloud');
+  });
+
+  it('still uses read-failure remediation for a genuine auth rejection', async () => {
+    const { failed } = await runCheck({ tokenStatus: 401, devices: [] });
+
+    expect(failed[0]!.evidence?.configError).toBeUndefined();
+    expect(failed[0]!.remediation).not.toContain('Reconnect the CrowdStrike integration');
   });
 });
 

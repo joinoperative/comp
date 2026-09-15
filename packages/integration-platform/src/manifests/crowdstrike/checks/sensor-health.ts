@@ -20,7 +20,12 @@
 import { TASK_TEMPLATES } from '../../../task-mappings';
 import type { CheckContext, CheckVariable, IntegrationCheck } from '../../../types';
 import { remediationForReadFailure, toHttpReadFailure } from '../../http-read-failure';
-import { falconAuthHeaders, falconBaseUrl, getFalconToken } from '../helpers/api-client';
+import {
+  falconAuthHeaders,
+  falconBaseUrl,
+  getFalconToken,
+  isFalconConfigError,
+} from '../helpers/api-client';
 import type { FalconDevice, FalconEnvelope } from '../types';
 
 /** Falcon caps `ids` lookups; 100 per request keeps the GET URL well inside limits. */
@@ -190,6 +195,25 @@ export const sensorHealthCheck: IntegrationCheck = {
       // Without this, an auth failure throws, the run records zero findings, and
       // the scheduler stores it as a *successful* run
       // (apps/api/src/trigger/integration-platform/run-connection-checks.ts).
+
+      // A malformed connection is not a read failure. Routing it through
+      // remediationForReadFailure would tell the customer to "re-run the check,
+      // and contact support if it keeps failing" — advice that can never fix a
+      // wrong region, because the stored value is the problem.
+      if (isFalconConfigError(err)) {
+        ctx.fail({
+          title: 'Could not verify Falcon sensor health',
+          description: `This CrowdStrike connection is not configured correctly, so no device was evaluated (${err.message})`,
+          resourceType: 'falcon-tenant',
+          resourceId: 'tenant',
+          severity: 'high',
+          remediation:
+            'Reconnect the CrowdStrike integration and re-enter the Client ID, Client Secret, and the Falcon cloud shown in your Falcon console URL. A key issued in one region is rejected by every other region.',
+          evidence: { configError: err.message },
+        });
+        return;
+      }
+
       const failure = toHttpReadFailure(err);
       ctx.fail({
         title: 'Could not verify Falcon sensor health',

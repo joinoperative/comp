@@ -55,6 +55,26 @@ const TOKEN_EXPIRY_SKEW_MS = 60_000;
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
+ * A problem with what is stored on the connection, not with Falcon.
+ *
+ * Kept distinct because the generic read-failure remediation says "re-run the
+ * check; if it keeps failing, contact support", which is actively wrong here —
+ * re-running never fixes a wrong region, and the fix is always to reconnect.
+ */
+export class FalconConfigError extends Error {
+  readonly isFalconConfigError = true;
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'FalconConfigError';
+  }
+}
+
+export function isFalconConfigError(err: unknown): err is FalconConfigError {
+  return err instanceof FalconConfigError;
+}
+
+/**
  * One token per connection per run. Falcon rate-limits token creation, so
  * minting a fresh token for every check in a run is a good way to get throttled.
  */
@@ -68,7 +88,7 @@ function credentialString(
   // ctx.credentials is Record<string, string | string[]>. A stored array would
   // otherwise reach .trim() and throw a TypeError that reads like a Falcon bug.
   if (Array.isArray(raw)) {
-    throw new Error(
+    throw new FalconConfigError(
       `CrowdStrike credential "${key}" is a list, but a single value is required. ` +
         'Reconnect the integration and enter the value once.',
     );
@@ -84,7 +104,7 @@ export function readCredentials(ctx: CheckContext): FalconCredentials {
   const cloud = credentialString(credentials, 'cloud');
 
   if (!client_id || !client_secret) {
-    throw new Error(
+    throw new FalconConfigError(
       'CrowdStrike credentials are incomplete — both Client ID and Client Secret are required.',
     );
   }
@@ -93,14 +113,14 @@ export function readCredentials(ctx: CheckContext): FalconCredentials {
   // and silently falling back to US-1 sent a US-2 tenant's credentials to the
   // wrong host and surfaced as an unexplained 401 on every device read.
   if (!cloud) {
-    throw new Error(
+    throw new FalconConfigError(
       'CrowdStrike Falcon cloud is not set on this connection. ' +
         'Reconnect and choose the region shown in your Falcon console URL.',
     );
   }
 
   if (!FALCON_HOSTS.has(cloud as FalconCloud)) {
-    throw new Error(
+    throw new FalconConfigError(
       `Unknown CrowdStrike Falcon cloud "${cloud}". ` +
         `Expected one of: ${[...FALCON_HOSTS.keys()].join(', ')}.`,
     );
