@@ -124,7 +124,11 @@ export const infrastructureIntegrations: Integration[] = [
     name: 'CrowdStrike',
     domain: 'crowdstrike.com',
     description: 'Endpoint detection and response (EDR)',
-    category: 'Infrastructure',
+    // Security, matching the code manifest in
+    // packages/integration-platform/src/manifests/crowdstrike. Listed in this
+    // file only because there is no security.ts yet; the file is organisational,
+    // the `category` field is what the UI groups by.
+    category: 'Security',
     popular: true,
     examplePrompts: [
       'Check CrowdStrike agent deployment',

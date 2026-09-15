@@ -33,6 +33,7 @@
     "dev": "tsc --watch",
     "format": "prettier --write .",
     "lint": "prettier --check .",
+    "test": "bun test",
     "typecheck": "tsc --noEmit",
     "verify": "bun run src/validators/manifest-validator.ts",
     "generate:tasks": "bun run scripts/generate-task-types.ts"

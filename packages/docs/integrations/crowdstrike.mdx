@@ -1,0 +1,62 @@
+---
+title: "CrowdStrike Falcon"
+description: "Connect CrowdStrike Falcon to evidence endpoint sensor health in Comp AI"
+---
+
+## Overview
+
+The CrowdStrike Falcon integration reports the health of every endpoint enrolled in your Falcon tenant, so the Secure Devices task is backed by continuously collected evidence rather than console screenshots.
+
+## Scope — what this does and does not prove
+
+This integration measures the **health of devices Falcon already knows about**. It does **not** prove that every company device is enrolled.
+
+A laptop with no sensor installed never appears in Falcon's inventory, so it cannot be reported as missing. Treat these results as "the machines running Falcon are healthy", not "every machine runs Falcon". Enrolment coverage is evidenced separately through Comp AI's own device inventory.
+
+## What Comp AI Collects
+
+### Secure Devices evidence
+
+For each enrolled endpoint:
+
+- Hostname and hardware serial number
+- Platform, OS version, and Falcon sensor version
+- Reduced functionality mode state
+- Last sensor check-in time
+- Containment state (recorded as context, never as a failure)
+
+A device passes when its sensor is **not** in reduced functionality mode **and** it has checked in within the staleness threshold.
+
+## Configuration Options
+
+- **Treat a device as stale after (days)** — default `30`. A sensor that has not checked in within this window is reported as not currently protecting the device.
+
+## Setup
+
+1. In the Falcon console, go to **Support and resources → API clients and keys**
+2. Click **Create API client** and name it `CompAI Compliance (read-only)`
+3. Grant one scope: **Hosts: Read**. Leave every **Write** box unchecked
+4. Copy the **Client ID** and **Client Secret** — the secret is shown only once
+5. Note the region in your Falcon console URL and select the matching **Falcon cloud** when connecting
+
+## Verify It Works
+
+1. Open the CrowdStrike Falcon integration in Comp AI
+2. Click **Run** on the sensor health check
+3. You should see one result per enrolled device
+
+## Troubleshooting
+
+**`HTTP 401: Unauthorized` on the device list, but the connection saved successfully.**
+Almost always the wrong **Falcon cloud**. Falcon is region-partitioned: a key issued in US-2 is rejected by US-1. Check the region in your Falcon console URL and reconnect with it selected. If the region is right, confirm the API client has **Hosts: Read**.
+
+**"Could not verify Falcon sensor health".**
+The check could not read from Falcon, so no device was evaluated. The finding's evidence carries the underlying error. This is reported as a failure on purpose — an unreadable tenant must never be recorded as a clean run.
+
+**A device reports reduced functionality mode.**
+The sensor is installed but prevention is degraded, most often because an OS upgrade is running ahead of the sensor version. Update the sensor to a release supported on that OS.
+
+## References
+
+- CrowdStrike API docs: https://developer.crowdstrike.com/
+- Hosts collection: https://developer.crowdstrike.com/api-reference/collections/hosts/
