@@ -61,14 +61,20 @@ function createPrismaClient(): PrismaClient {
     | { rejectUnauthorized: false };
   if (isLocalhost) {
     ssl = undefined;
+  } else if (allowInsecure) {
+    // Operative: the explicit opt-out wins over NODE_EXTRA_CA_CERTS, matching
+    // packages/db/src/ssl-config.ts and apps/app/prisma/client.ts. Upstream
+    // checked the CA bundle first, which made this flag dead code in the
+    // Trigger.dev deployment (apps/api/caBundleExtension.ts always sets
+    // NODE_EXTRA_CA_CERTS), so every scheduled API task died with "unable to
+    // verify the first certificate" against a non-RDS Postgres.
+    ssl = { rejectUnauthorized: false };
   } else if (hasCABundle) {
     // Verified TLS: rely on Node's TLS context (NODE_EXTRA_CA_CERTS adds the AWS
     // RDS CA to the trust store). Skip hostname check because connections may
     // traverse an AWS NLB whose hostname isn't in the RDS Proxy cert's SAN list.
     // The chain check still rejects forged or wrong-CA certs.
     ssl = { checkServerIdentity: () => undefined };
-  } else if (allowInsecure) {
-    ssl = { rejectUnauthorized: false };
   } else {
     throw new Error(
       'Refusing to connect to a non-local Postgres without TLS verification. Set NODE_EXTRA_CA_CERTS to a CA bundle, or set PRISMA_ALLOW_INSECURE_TLS=1 if you intentionally want unverified TLS.',
