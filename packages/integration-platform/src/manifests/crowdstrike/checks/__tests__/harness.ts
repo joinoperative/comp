@@ -54,6 +54,10 @@ export interface Scenario {
   nullList?: boolean;
   listErrorsRaw?: unknown;
   tokenStatus?: number;
+  /** Let the first mint succeed, then reject the mid-run re-mint. */
+  tokenFailsOnRemint?: boolean;
+  /** Throw a different error per detail-batch call, in order. */
+  detailErrorSequence?: Error[];
   cloud?: string;
   staleAfterDays?: number;
 }
@@ -72,11 +76,15 @@ export async function runCheck(s: Scenario = {}): Promise<RunResult> {
   const warnings: string[] = [];
 
   const tokenCalls = { count: 0 };
+  const detailCallCount = { n: 0 };
   const devices = s.devices ?? [];
   const idPages = s.idPages ?? [{ ids: devices.map((d) => d.device_id) }];
 
   globalThis.fetch = (async () => {
     tokenCalls.count += 1;
+    if (s.tokenFailsOnRemint && tokenCalls.count > 1) {
+      return new Response(JSON.stringify({ errors: [{ message: 'rejected' }] }), { status: 401 });
+    }
     return s.tokenStatus
       ? new Response(JSON.stringify({ errors: [{ message: 'nope' }] }), { status: s.tokenStatus })
       : new Response(
@@ -133,6 +141,11 @@ export async function runCheck(s: Scenario = {}): Promise<RunResult> {
       }
 
       if (path.startsWith('/devices/entities/devices/v2')) {
+        if (s.detailErrorSequence) {
+          const err = s.detailErrorSequence[detailCallCount.n];
+          detailCallCount.n += 1;
+          if (err) throw err;
+        }
         if (s.throwOnDetails) throw s.throwOnDetails;
         const requested = new URLSearchParams(path.split('?')[1] ?? '').getAll('ids');
         const dropped = new Set(s.dropFromDetails ?? []);

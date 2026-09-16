@@ -36,6 +36,7 @@ Support gets asked about these, so they are all listed. Only the first two are a
 | Device is not fully protected | High | The sensor is in reduced functionality mode — installed, but prevention is degraded |
 | Device has not checked in for N days | High | Last check-in is beyond the staleness threshold |
 | Sensor health could not be verified for N devices | Medium | Falcon returned the device without a usable reduced-functionality-mode value or check-in time. Aggregated into one finding, not one per device |
+| Sensor health could not be read for N devices | High | Falcon refused or failed the request for those devices — a missing scope, rejected credentials, or a server error. Distinct from the row below: nothing was read, so nothing is known |
 | Falcon returned no details for N devices | Medium | Listed as enrolled but no record came back. A device decommissioned mid-run looks exactly like this |
 | No devices are enrolled | High | The tenant returned an empty inventory |
 | Could not verify Falcon sensor health | High | Authentication or the device read failed, so nothing was evaluated |

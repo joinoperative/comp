@@ -213,3 +213,47 @@ describe('read failures never look like success', () => {
     expect(r.failed[0]!.resourceId).toBe('tenant');
   });
 });
+
+describe('remediation stays truthful on the failure paths', () => {
+  it('tells the user to reconnect when the mid-run re-mint is rejected', async () => {
+    // The re-mint is itself an auth exchange. Letting its rejection throw escaped
+    // fetchDeviceDetails, landed in the last-resort handler, and advised granting
+    // Hosts: Read — which no scope change can fix. Third appearance of this bug.
+    const err = Object.assign(new Error('HTTP 401: Unauthorized'), { status: 401 });
+    const r = await runCheck({
+      devices: [healthy('a')],
+      throwOnDetails: err,
+      tokenFailsOnRemint: true,
+    });
+
+    const finding = titled(r, 'could not be read')!;
+    expect(finding.remediation).toContain('Reconnect');
+    expect(finding.remediation).not.toContain('Hosts: Read');
+  });
+
+  it('classifies from the most serious batch, not the first', async () => {
+    // A transient blip ahead of a permissions failure previously picked the
+    // transient one and advised re-running, hiding the missing scope.
+    const transient = Object.assign(new Error('HTTP 503: Server Error'), { status: 503 });
+    const denied = Object.assign(new Error('HTTP 403: Forbidden'), { status: 403 });
+    const devices = Array.from({ length: 150 }, (_, i) => healthy(`d${i}`));
+
+    // Third entry so the post-re-mint retry of batch 2 fails too, rather than
+    // succeeding and leaving only the transient failure recorded.
+    const r = await runCheck({ devices, detailErrorSequence: [transient, denied, denied] });
+
+    const finding = titled(r, 'could not be read')!;
+    expect(finding.remediation).toContain('Hosts: Read');
+  });
+
+  it('caps the device list embedded in evidence', async () => {
+    // Evidence is stored per finding and paging allows up to 50,000 devices.
+    const devices = Array.from({ length: 250 }, (_, i) => healthy(`d${i}`));
+    const r = await runCheck({ devices, dropFromDetails: devices.map((d) => d.device_id) });
+
+    const finding = titled(r, 'returned no details')!;
+    expect(finding.evidence?.deviceCount).toBe(250);
+    expect((finding.evidence?.deviceIds as string[]).length).toBe(100);
+    expect(finding.evidence?.deviceIdsTruncated).toBe(150);
+  });
+});

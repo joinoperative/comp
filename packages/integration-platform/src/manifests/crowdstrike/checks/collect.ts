@@ -8,6 +8,8 @@
 
 import type { CheckContext } from '../../../types';
 import { toHttpReadFailure, type ReadFailure } from '../../http-read-failure';
+import { isFalconAuthError, isFalconConfigError } from '../helpers/errors';
+import { asError, envelopeErrors, readArray, readCursor } from './envelope';
 import type { FalconDevice, FalconEnvelope } from '../types';
 
 /** Falcon caps `ids` lookups; 100 per request keeps the GET URL well inside limits. */
@@ -40,6 +42,14 @@ export interface EnrolledDevices {
 export interface UnreadableBatch {
   ids: string[];
   failure: ReadFailure;
+  /**
+   * True when Falcon rejected the credentials themselves rather than the read.
+   *
+   * Carried separately because `ReadFailure` cannot express it: a rejected
+   * credential looks like a 401 and would otherwise be given the "grant
+   * Hosts: Read" remediation, which no scope change can fix.
+   */
+  authRejected?: boolean;
 }
 
 export interface DeviceDetails {
@@ -57,73 +67,6 @@ export interface DeviceDetails {
   envelopeErrors: Array<{ code: number; message: string }>;
   /** Batches that could not be read at all, each with its own classification. */
   unreadable: UnreadableBatch[];
-}
-
-/** Read the scroll cursor, which Falcon returns as a string in either field. */
-export function readCursor(meta: FalconEnvelope<string[]>['meta']): string | undefined {
-  const pagination = meta?.pagination;
-  if (!pagination) return undefined;
-  if (typeof pagination.offset_string === 'string' && pagination.offset_string) {
-    return pagination.offset_string;
-  }
-  // The scroll endpoint returns an opaque string here; the offset endpoint
-  // returns a number, which is not a cursor and must not be treated as one.
-  if (typeof pagination.offset === 'string' && pagination.offset) {
-    return pagination.offset;
-  }
-  return undefined;
-}
-
-/**
- * A non-empty `errors` array on an HTTP 200.
- *
- * Returned as data rather than thrown: for a *detail* response this arrives
- * alongside perfectly good `resources` (Falcon reports one decommissioned host
- * as a per-id error next to 99 live ones), so the caller must record it without
- * discarding the batch.
- */
-export function envelopeErrors(
-  envelope: FalconEnvelope<unknown>,
-): Array<{ code: number; message: string }> {
-  // `errors?.length` alone is truthy for a string, which then yields
-  // "Falcon returned an error: undefined" and loses the 401/403 classification.
-  const errors = envelope.errors;
-  if (!Array.isArray(errors)) return [];
-  return errors
-    .filter((e): e is { code: number; message: string } => typeof e === 'object' && e !== null)
-    .map((e) => ({
-      code: typeof e.code === 'number' ? e.code : 0,
-      message: typeof e.message === 'string' ? e.message : 'unspecified error',
-    }));
-}
-
-function describeErrors(errors: Array<{ code: number; message: string }>): string {
-  const first = errors[0]!;
-  const extra = errors.length > 1 ? ` (+${errors.length - 1} more)` : '';
-  return `Falcon returned an error: ${first.message}${extra}`;
-}
-
-function asError(errors: Array<{ code: number; message: string }>): Error {
-  const error = new Error(describeErrors(errors));
-  (error as Error & { status: number }).status = errors[0]!.code;
-  return error;
-}
-
-/**
- * A malformed success body must not throw outside a guarded boundary: that
- * surfaces as `status: 'error'` with zero findings, which the scheduler records
- * as a *successful* run.
- */
-function readArray<T>(envelope: FalconEnvelope<T[]>, what: string): T[] {
-  const resources = envelope.resources;
-  // `undefined` is a legitimately absent key; `null` is a malformed body, and
-  // reading it as [] turned a broken response into the high-severity
-  // "No devices are enrolled" finding.
-  if (resources === undefined) return [];
-  if (!Array.isArray(resources)) {
-    throw new Error(`Falcon returned a malformed ${what} response (resources was not a list).`);
-  }
-  return resources;
 }
 
 /** Walk the device-id scroll, deduping and capping pages. */
@@ -236,6 +179,7 @@ export async function fetchDeviceDetails(
       .join('&')}`;
 
     let failure: ReadFailure | undefined;
+    let authRejected = false;
 
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
@@ -264,8 +208,19 @@ export async function fetchDeviceDetails(
         // themselves are the problem, not a stale token.
         if (failure.denied && reauth && !reauthed && attempt === 0) {
           reauthed = true;
-          headers = await reauth();
-          continue;
+          try {
+            headers = await reauth();
+            continue;
+          } catch (reauthErr) {
+            // Re-minting is itself an auth exchange, so it can be rejected.
+            // Letting that throw escapes this function entirely and lands in the
+            // check's last-resort handler, which classifies it as a denied read
+            // and advises granting Hosts: Read — the exact wrong advice, and the
+            // third time this connector has produced it.
+            failure = toHttpReadFailure(reauthErr);
+            authRejected = isFalconAuthError(reauthErr) || isFalconConfigError(reauthErr);
+            break;
+          }
         }
         break;
       }
@@ -273,12 +228,12 @@ export async function fetchDeviceDetails(
 
     if (!failure) continue;
 
-    unreadable.push({ ids: batch, failure });
+    unreadable.push({ ids: batch, failure, authRejected });
 
-    if (failure.denied) {
+    if (failure.denied || authRejected) {
       // Every remaining batch would be rejected the same way.
       const remaining = batches.slice(index + 1).flat();
-      if (remaining.length) unreadable.push({ ids: remaining, failure });
+      if (remaining.length) unreadable.push({ ids: remaining, failure, authRejected });
       ctx.warn(
         `Falcon rejected a device read; stopped after ${index + 1} of ${batches.length} batches.`,
       );

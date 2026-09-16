@@ -19,6 +19,25 @@ export const RECONNECT_REMEDIATION =
 
 const TENANT = { resourceType: 'falcon-tenant', resourceId: 'tenant' } as const;
 
+/**
+ * Evidence is stored per finding, and paging allows up to 50,000 devices. Cap
+ * the embedded list so one bad run cannot write a 50k-entry blob, while keeping
+ * enough to act on.
+ */
+const EVIDENCE_SAMPLE_LIMIT = 100;
+
+function sampleIds(ids: string[]): Record<string, unknown> {
+  return ids.length <= EVIDENCE_SAMPLE_LIMIT
+    ? { deviceIds: ids }
+    : { deviceIds: ids.slice(0, EVIDENCE_SAMPLE_LIMIT), deviceIdsTruncated: ids.length - EVIDENCE_SAMPLE_LIMIT };
+}
+
+function sampleDevices<T>(devices: T[]): Record<string, unknown> {
+  return devices.length <= EVIDENCE_SAMPLE_LIMIT
+    ? { devices }
+    : { devices: devices.slice(0, EVIDENCE_SAMPLE_LIMIT), devicesTruncated: devices.length - EVIDENCE_SAMPLE_LIMIT };
+}
+
 /** Nothing was evaluated. Always high — a blank run must not read as clean. */
 export function failUnverified(
   ctx: CheckContext,
@@ -71,7 +90,12 @@ export function reportNoDevices(ctx: CheckContext): void {
  */
 export function reportUnreadable(ctx: CheckContext, unreadable: UnreadableBatch[]): void {
   const ids = unreadable.flatMap((b) => b.ids);
-  const failure = unreadable[0]!.failure;
+
+  // Classify from the most serious batch, not the first. A transient blip
+  // ahead of a permissions failure would otherwise pick the transient one and
+  // advise re-running, hiding the missing scope behind it.
+  const authRejected = unreadable.some((b) => b.authRejected);
+  const failure = (unreadable.find((b) => b.failure.denied) ?? unreadable[0]!).failure;
 
   ctx.fail({
     title: `Sensor health could not be read for ${ids.length} device(s)`,
@@ -79,8 +103,11 @@ export function reportUnreadable(ctx: CheckContext, unreadable: UnreadableBatch[
     resourceType: 'falcon-tenant',
     resourceId: 'unreadable-devices',
     severity: 'high',
-    remediation: remediationForReadFailure(failure, GRANT_REMEDIATION),
-    evidence: { deviceCount: ids.length, deviceIds: ids, readError: failure.error },
+    // Rejected credentials are not a missing scope; no grant fixes them.
+    remediation: authRejected
+      ? RECONNECT_REMEDIATION
+      : remediationForReadFailure(failure, GRANT_REMEDIATION),
+    evidence: { deviceCount: ids.length, ...sampleIds(ids), readError: failure.error },
   });
 }
 
@@ -99,7 +126,7 @@ export function reportUnreturned(
     severity: 'medium',
     remediation:
       'Re-run the check. If the same devices are still missing, open them in Falcon → Host Management to confirm they exist and are visible to this API client.',
-    evidence: { deviceCount: unreturned.length, deviceIds: unreturned, falconErrors },
+    evidence: { deviceCount: unreturned.length, ...sampleIds(unreturned), falconErrors },
   });
 }
 
@@ -123,7 +150,7 @@ export function reportUnverifiedDevices(
     severity: 'medium',
     remediation:
       'Open the listed devices in Falcon → Host Management and confirm their sensors are reporting, then re-run the check.',
-    evidence: { deviceCount: devices.length, devices },
+    evidence: { deviceCount: devices.length, ...sampleDevices(devices) },
   });
 }
 
