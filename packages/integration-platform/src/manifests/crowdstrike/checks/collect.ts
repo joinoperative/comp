@@ -36,14 +36,27 @@ export interface EnrolledDevices {
   truncated: boolean;
 }
 
+/** A batch Falcon would not serve at all, kept with why it failed. */
+export interface UnreadableBatch {
+  ids: string[];
+  failure: ReadFailure;
+}
+
 export interface DeviceDetails {
   devices: FalconDevice[];
-  /** Listed as enrolled but never returned with details — neither pass nor fail. */
+  /**
+   * Ids absent from an otherwise successful response — a record that genuinely
+   * did not come back, which is what a device decommissioned mid-run looks like.
+   *
+   * Deliberately separate from `unreadable`: collapsing the two reported a
+   * revoked scope as "device decommissioned?" with re-run advice that could
+   * never fix it.
+   */
   unreturned: string[];
   /** Per-id errors Falcon reported alongside an HTTP 200. */
   envelopeErrors: Array<{ code: number; message: string }>;
-  /** Set when one or more batches could not be read at all. */
-  readFailure?: ReadFailure;
+  /** Batches that could not be read at all, each with its own classification. */
+  unreadable: UnreadableBatch[];
 }
 
 /** Read the scroll cursor, which Falcon returns as a string in either field. */
@@ -72,7 +85,16 @@ export function readCursor(meta: FalconEnvelope<string[]>['meta']): string | und
 export function envelopeErrors(
   envelope: FalconEnvelope<unknown>,
 ): Array<{ code: number; message: string }> {
-  return envelope.errors?.length ? envelope.errors : [];
+  // `errors?.length` alone is truthy for a string, which then yields
+  // "Falcon returned an error: undefined" and loses the 401/403 classification.
+  const errors = envelope.errors;
+  if (!Array.isArray(errors)) return [];
+  return errors
+    .filter((e): e is { code: number; message: string } => typeof e === 'object' && e !== null)
+    .map((e) => ({
+      code: typeof e.code === 'number' ? e.code : 0,
+      message: typeof e.message === 'string' ? e.message : 'unspecified error',
+    }));
 }
 
 function describeErrors(errors: Array<{ code: number; message: string }>): string {
@@ -94,7 +116,10 @@ function asError(errors: Array<{ code: number; message: string }>): Error {
  */
 function readArray<T>(envelope: FalconEnvelope<T[]>, what: string): T[] {
   const resources = envelope.resources;
-  if (resources === undefined || resources === null) return [];
+  // `undefined` is a legitimately absent key; `null` is a malformed body, and
+  // reading it as [] turned a broken response into the high-severity
+  // "No devices are enrolled" finding.
+  if (resources === undefined) return [];
   if (!Array.isArray(resources)) {
     throw new Error(`Falcon returned a malformed ${what} response (resources was not a list).`);
   }
@@ -171,52 +196,95 @@ export async function listEnrolledDeviceIds(
   return { ids: [...ids], truncated: true };
 }
 
-/** Fetch details for every enrolled id, reconciling what comes back. */
+/**
+ * Fetch details for every enrolled id, reconciling what comes back.
+ *
+ * `reauth` is called at most once, when Falcon rejects a batch with 401/403: the
+ * cached token may have been revoked or rotated mid-run. If the retry is
+ * rejected too, collection stops — every remaining batch would be rejected
+ * identically, and sending them is hundreds of pointless unauthorized calls on
+ * a large tenant.
+ */
 export async function fetchDeviceDetails(
   ctx: CheckContext,
   baseUrl: string,
-  headers: Record<string, string>,
+  initialHeaders: Record<string, string>,
   deviceIds: string[],
+  reauth?: () => Promise<Record<string, string>>,
 ): Promise<DeviceDetails> {
   const devices: FalconDevice[] = [];
   const unreturned: string[] = [];
   const collectedErrors: Array<{ code: number; message: string }> = [];
-  let readFailure: ReadFailure | undefined;
+  const unreadable: UnreadableBatch[] = [];
 
+  let headers = initialHeaders;
+  let reauthed = false;
+
+  const batches: string[][] = [];
   for (let i = 0; i < deviceIds.length; i += DEVICE_DETAIL_BATCH_SIZE) {
-    const batch = deviceIds.slice(i, i + DEVICE_DETAIL_BATCH_SIZE);
+    batches.push(deviceIds.slice(i, i + DEVICE_DETAIL_BATCH_SIZE));
+  }
 
+  for (const [index, batch] of batches.entries()) {
     // Falcon expects `ids` repeated once per device (?ids=a&ids=b), not a
     // single comma-joined value — it reads a comma-joined string as one id and
     // rejects it with "invalid device id". ctx.fetch's `params` is a
     // Record<string, string> and so cannot express a repeated key, so the
     // query string is built onto the path instead.
-    const idsQuery = batch.map((id) => `ids=${encodeURIComponent(id)}`).join('&');
+    const path = `/devices/entities/devices/v2?${batch
+      .map((id) => `ids=${encodeURIComponent(id)}`)
+      .join('&')}`;
 
-    let returned: FalconDevice[];
-    try {
-      const details = await ctx.fetch<FalconEnvelope<FalconDevice[]>>(
-        `/devices/entities/devices/v2?${idsQuery}`,
-        { baseUrl, headers },
-      );
+    let failure: ReadFailure | undefined;
 
-      // Recorded, NOT fatal. Falcon returns 99 resources plus one per-id error
-      // when a host is decommissioned between the sweep and this call; bailing
-      // out here threw away 99 devices' evidence and failed the whole run on a
-      // routine race.
-      collectedErrors.push(...envelopeErrors(details));
-      returned = readArray(details, 'device details');
-    } catch (err) {
-      readFailure ??= toHttpReadFailure(err);
-      unreturned.push(...batch);
-      continue;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const details = await ctx.fetch<FalconEnvelope<FalconDevice[]>>(path, {
+          baseUrl,
+          headers,
+        });
+
+        // Recorded, NOT fatal. Falcon returns 99 resources plus one per-id error
+        // when a host is decommissioned between the sweep and this call; bailing
+        // out here threw away 99 devices' evidence and failed the whole run on a
+        // routine race.
+        collectedErrors.push(...envelopeErrors(details));
+        const returned = readArray(details, 'device details');
+
+        devices.push(...returned);
+        const returnedIds = new Set(returned.map((d) => d.device_id));
+        unreturned.push(...batch.filter((id) => !returnedIds.has(id)));
+
+        failure = undefined;
+        break;
+      } catch (err) {
+        failure = toHttpReadFailure(err);
+
+        // One re-mint, then give up: a second rejection means the credentials
+        // themselves are the problem, not a stale token.
+        if (failure.denied && reauth && !reauthed && attempt === 0) {
+          reauthed = true;
+          headers = await reauth();
+          continue;
+        }
+        break;
+      }
     }
 
-    devices.push(...returned);
+    if (!failure) continue;
 
-    const returnedIds = new Set(returned.map((d) => d.device_id));
-    unreturned.push(...batch.filter((id) => !returnedIds.has(id)));
+    unreadable.push({ ids: batch, failure });
+
+    if (failure.denied) {
+      // Every remaining batch would be rejected the same way.
+      const remaining = batches.slice(index + 1).flat();
+      if (remaining.length) unreadable.push({ ids: remaining, failure });
+      ctx.warn(
+        `Falcon rejected a device read; stopped after ${index + 1} of ${batches.length} batches.`,
+      );
+      break;
+    }
   }
 
-  return { devices, unreturned, envelopeErrors: collectedErrors, readFailure };
+  return { devices, unreturned, envelopeErrors: collectedErrors, unreadable };
 }

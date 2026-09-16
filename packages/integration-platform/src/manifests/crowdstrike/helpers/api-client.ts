@@ -194,7 +194,11 @@ export async function getFalconToken(ctx: CheckContext): Promise<string> {
       (error as Error & { status: number }).status = response.status;
       lastError = error;
 
-      if (attempt < TOKEN_MAX_RETRIES) {
+      // Only throttling and server faults are worth another attempt. Retrying
+      // a permanent 404/405/422 burns the budget and delays the diagnosis.
+      const retryable = response.status === 429 || response.status >= 500;
+
+      if (retryable && attempt < TOKEN_MAX_RETRIES) {
         const advised = retryAfterMs(response, Date.now());
         await sleep(advised ?? TOKEN_INITIAL_RETRY_DELAY_MS * Math.pow(2, attempt));
         continue;

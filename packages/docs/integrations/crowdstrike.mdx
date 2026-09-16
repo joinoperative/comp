@@ -61,7 +61,21 @@ A read failure always produces a finding rather than an empty pass. A run that e
 
 1. Open the CrowdStrike Falcon integration in Comp AI
 2. Click **Run** on the sensor health check
-3. You should see one result per enrolled device
+3. You should see a pass or a fail for each device Falcon could describe
+
+Devices Falcon did not describe fully, and devices it listed but returned no
+record for, are grouped into one finding each rather than reported individually
+— a large tenant would otherwise produce thousands of findings in a single run.
+
+## Known limits
+
+Paging stops at a 50,000-device ceiling (500 per page, 100 pages) and reports a
+truncation finding rather than silently returning a partial fleet.
+
+The page-boundary path — an inventory that is an exact multiple of 500 — is
+covered by tests but has not been exercised against a live tenant, because the
+tenant this was built on has four devices. It relies on `devices-scroll`
+populating `meta.pagination.total`.
 
 ## Troubleshooting
 

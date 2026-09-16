@@ -14,6 +14,8 @@ const originalFetch = globalThis.fetch;
 interface Call {
   url: string;
   body: string;
+  method?: string;
+  contentType?: string;
 }
 
 /** Queue of responses; the last one repeats once exhausted. */
@@ -21,7 +23,12 @@ function stubFetch(responses: Array<() => Response>): Call[] {
   const calls: Call[] = [];
   let i = 0;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    calls.push({ url: String(input), body: String(init?.body ?? '') });
+    calls.push({
+      url: String(input),
+      body: String(init?.body ?? ''),
+      method: init?.method,
+      contentType: (init?.headers as Record<string, string> | undefined)?.['Content-Type'],
+    });
     const make = responses[Math.min(i, responses.length - 1)]!;
     i += 1;
     return make();
@@ -113,10 +120,19 @@ describe('region routing', () => {
     expect(calls[0]!.url).toBe('https://api.eu-1.crowdstrike.com/oauth2/token');
   });
 
-  it('sends the client credentials grant', async () => {
+  it('posts all three credential fields as form-encoded', async () => {
+    // Asserting only grant_type let the id and secret be dropped silently.
     const calls = stubFetch([() => ok()]);
     await getFalconToken(validCtx());
-    expect(calls[0]!.body).toContain('grant_type=client_credentials');
+
+    const call = calls[0]!;
+    expect(call.method).toBe('POST');
+    expect(call.contentType).toBe('application/x-www-form-urlencoded');
+
+    const body = new URLSearchParams(call.body);
+    expect(body.get('client_id')).toBe('id');
+    expect(body.get('client_secret')).toBe('secret');
+    expect(body.get('grant_type')).toBe('client_credentials');
   });
 });
 
@@ -162,6 +178,13 @@ describe('retry', () => {
     await getFalconToken(validCtx());
     // The default first backoff is 500ms; honouring the header is much shorter.
     expect(Date.now() - started).toBeLessThan(400);
+  });
+
+  it.each([404, 405, 422])('does not retry a permanent %i', async (code) => {
+    // Retrying a permanent status burns the budget and delays the diagnosis.
+    const calls = stubFetch([() => status(code)]);
+    await expect(getFalconToken(validCtx())).rejects.toThrow(new RegExp(`HTTP ${code}`));
+    expect(calls).toHaveLength(1);
   });
 
   it('gives up after the retry budget', async () => {

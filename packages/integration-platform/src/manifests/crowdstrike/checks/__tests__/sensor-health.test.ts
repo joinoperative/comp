@@ -1,136 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import type { CheckContext } from '../../../../types';
-import { clearFalconTokenCache } from '../../helpers/api-client';
-import type { FalconDevice } from '../../types';
+import { describe, expect, it } from 'bun:test';
 import { DEVICE_QUERY_LIMIT, MAX_DEVICE_PAGES } from '../collect';
-import { sensorHealthCheck } from '../sensor-health';
-
-const DAY_MS = 86_400_000;
-
-interface Result {
-  resourceId: string;
-  title: string;
-  remediation?: string;
-  evidence?: Record<string, unknown>;
-}
-
-interface RunResult {
-  passed: Result[];
-  failed: Result[];
-  calls: Array<{ path: string; baseUrl?: string; headers?: Record<string, string> }>;
-  warnings: string[];
-}
-
-const healthy = (id: string, hostname = `${id}.local`, o: Partial<FalconDevice> = {}): FalconDevice => ({
-  device_id: id,
-  hostname,
-  platform_name: 'Mac',
-  agent_version: '7.40.21204.0',
-  serial_number: `SER-${id}`,
-  status: 'normal',
-  reduced_functionality_mode: 'no',
-  last_seen: new Date(Date.now() - DAY_MS).toISOString(),
-  ...o,
-});
-
-interface Scenario {
-  devices?: FalconDevice[];
-  idPages?: Array<{ ids: string[]; cursor?: string; total?: number }>;
-  dropFromDetails?: string[];
-  detailErrors?: Array<{ code: number; message: string }>;
-  listErrors?: Array<{ code: number; message: string }>;
-  throwOnList?: Error;
-  throwOnDetails?: Error;
-  malformedList?: boolean;
-  tokenStatus?: number;
-  cloud?: string;
-  staleAfterDays?: number;
-}
-
-const originalFetch = globalThis.fetch;
-beforeEach(() => clearFalconTokenCache());
-afterEach(() => {
-  globalThis.fetch = originalFetch;
-  clearFalconTokenCache();
-});
-
-async function runCheck(s: Scenario = {}): Promise<RunResult> {
-  const passed: Result[] = [];
-  const failed: Result[] = [];
-  const calls: RunResult['calls'] = [];
-  const warnings: string[] = [];
-
-  const devices = s.devices ?? [];
-  const idPages = s.idPages ?? [{ ids: devices.map((d) => d.device_id) }];
-
-  globalThis.fetch = (async () =>
-    s.tokenStatus
-      ? new Response(JSON.stringify({ errors: [{ message: 'nope' }] }), { status: s.tokenStatus })
-      : new Response(
-          JSON.stringify({ access_token: 'tok', expires_in: 1799, token_type: 'bearer' }),
-          { status: 200, headers: { 'Content-Type': 'application/json' } },
-        )) as typeof globalThis.fetch;
-
-  const record = (bucket: Result[]) => (r: { resourceId?: string; title: string; remediation?: string; evidence?: unknown }) =>
-    bucket.push({
-      resourceId: r.resourceId ?? '',
-      title: r.title,
-      remediation: r.remediation,
-      evidence: r.evidence as Record<string, unknown> | undefined,
-    });
-
-  const ctx = {
-    accessToken: '',
-    credentials: { client_id: 'id', client_secret: 'secret', cloud: s.cloud ?? 'us-2' },
-    variables: s.staleAfterDays === undefined ? {} : { stale_after_days: s.staleAfterDays },
-    connectionId: 'conn_1',
-    organizationId: 'org_1',
-    metadata: {},
-    log: () => {},
-    warn: (m: string) => warnings.push(m),
-    pass: record(passed),
-    fail: record(failed),
-    fetch: (async <T>(path: string, opts?: { baseUrl?: string; headers?: Record<string, string>; params?: Record<string, string> }): Promise<T> => {
-      calls.push({ path, baseUrl: opts?.baseUrl, headers: opts?.headers });
-
-      if (path.startsWith('/devices/queries/devices-scroll/v1')) {
-        if (s.throwOnList) throw s.throwOnList;
-        if (s.listErrors) return { errors: s.listErrors } as unknown as T;
-        if (s.malformedList) return { resources: 'not-a-list' } as unknown as T;
-
-        const cursor = opts?.params?.offset;
-        const i = cursor ? idPages.findIndex((p) => p.cursor === cursor) + 1 : 0;
-        const page = idPages[i];
-        if (!page) return { resources: [], meta: { pagination: {} } } as unknown as T;
-        return {
-          resources: page.ids,
-          meta: {
-            pagination: {
-              ...(page.cursor ? { offset: page.cursor } : {}),
-              ...(page.total === undefined ? {} : { total: page.total }),
-            },
-          },
-        } as unknown as T;
-      }
-
-      if (path.startsWith('/devices/entities/devices/v2')) {
-        if (s.throwOnDetails) throw s.throwOnDetails;
-        const requested = new URLSearchParams(path.split('?')[1] ?? '').getAll('ids');
-        const dropped = new Set(s.dropFromDetails ?? []);
-        return {
-          resources: devices.filter((d) => requested.includes(d.device_id) && !dropped.has(d.device_id)),
-          ...(s.detailErrors ? { errors: s.detailErrors } : {}),
-        } as unknown as T;
-      }
-      throw new Error(`Unexpected fetch: ${path}`);
-    }) as CheckContext['fetch'],
-  } as unknown as CheckContext;
-
-  await sensorHealthCheck.run(ctx);
-  return { passed, failed, calls, warnings };
-}
-
-const titled = (r: RunResult, fragment: string) => r.failed.find((f) => f.title.includes(fragment));
+import { healthy, runCheck, titled, type RunResult } from './harness';
 
 describe('happy path', () => {
   it('passes healthy devices and fails a degraded one', async () => {
@@ -271,6 +141,21 @@ describe('read failures never look like success', () => {
     expect(titled(r, 'Could not verify')).toBeDefined();
   });
 
+  it('treats a null resources list as malformed, not an empty fleet', async () => {
+    // Reading null as [] turned a broken response into the high-severity
+    // "No devices are enrolled" finding, which is a different problem entirely.
+    const r = await runCheck({ nullList: true, devices: [] });
+    expect(titled(r, 'Could not verify')).toBeDefined();
+    expect(titled(r, 'No devices are enrolled')).toBeUndefined();
+  });
+
+  it('ignores a non-array errors field rather than reporting "undefined"', async () => {
+    // `errors?.length` is truthy for a string, which produced
+    // "Falcon returned an error: undefined" and lost the status classification.
+    const r = await runCheck({ listErrorsRaw: 'not-an-array', devices: [] });
+    expect(r.failed.some((f) => (f.evidence?.readError as string | undefined)?.includes('undefined'))).toBe(false);
+  });
+
   it('reports a malformed success body instead of throwing out of the check', async () => {
     // A non-array `resources` on an HTTP 200 used to escape the guarded paths,
     // and a zero-finding throw is recorded by the scheduler as success.
@@ -278,10 +163,49 @@ describe('read failures never look like success', () => {
     expect(titled(r, 'Could not verify')).toBeDefined();
   });
 
-  it('reports a detail batch that throws', async () => {
-    const err = Object.assign(new Error('HTTP 500: Server Error'), { status: 500 });
+  it('reports an unreadable detail batch as a read failure, not a possible decommission', async () => {
+    // Collapsing these reported a revoked scope as "device decommissioned?"
+    // at medium severity with "re-run the check" — advice that cannot work.
+    const err = Object.assign(new Error('HTTP 403: Forbidden'), { status: 403 });
     const r = await runCheck({ devices: [healthy('a')], throwOnDetails: err });
-    expect(titled(r, 'returned no details')).toBeDefined();
+
+    const finding = titled(r, 'could not be read')!;
+    expect(finding.resourceId).toBe('unreadable-devices');
+    expect(finding.severity).toBe('high');
+    expect(finding.remediation).toContain('Hosts: Read');
+    expect(titled(r, 'returned no details')).toBeUndefined();
+  });
+
+  it('keeps "no record came back" for ids genuinely absent from a 200', async () => {
+    const r = await runCheck({ devices: [healthy('a'), healthy('b')], dropFromDetails: ['b'] });
+    const finding = titled(r, 'returned no details')!;
+    expect(finding.severity).toBe('medium');
+    expect(titled(r, 'could not be read')).toBeUndefined();
+  });
+
+  it('re-mints once when Falcon rejects a batch, then stops rather than hammering', async () => {
+    // Continuing with a dead token sent hundreds of unauthorized calls on a
+    // large tenant, and a first transient failure masked the later 401.
+    const devices = Array.from({ length: 250 }, (_, i) => healthy(`d${i}`));
+    const err = Object.assign(new Error('HTTP 401: Unauthorized'), { status: 401 });
+    const r = await runCheck({ devices, throwOnDetails: err });
+
+    const detailCalls = r.calls.filter((c) => c.path.startsWith('/devices/entities'));
+    expect(detailCalls).toHaveLength(2); // first batch, then one retry after re-minting
+    expect(r.tokenCalls).toBe(2); // initial mint plus one re-mint
+    expect(r.warnings.join(' ')).toContain('stopped after');
+
+    // All 250 are accounted for, not just the batch that failed.
+    const finding = titled(r, 'could not be read')!;
+    expect(finding.evidence?.deviceCount).toBe(250);
+  });
+
+  it('invalidates the cached token when the sweep is rejected', async () => {
+    const err = Object.assign(new Error('HTTP 401: Unauthorized'), { status: 401 });
+    await runCheck({ throwOnList: err, devices: [] });
+    // A second run must mint again rather than replay the rejected token.
+    const second = await runCheck({ devices: [healthy('a')] });
+    expect(second.tokenCalls).toBe(1);
   });
 
   it('fails when the tenant has no enrolled devices', async () => {

@@ -31,14 +31,16 @@ import {
 } from '../helpers/api-client';
 import { fetchDeviceDetails, listEnrolledDeviceIds, MAX_DEVICE_PAGES } from './collect';
 import { DEFAULT_STALE_AFTER_DAYS, evaluateDevice } from './evaluate';
-
-const GRANT_REMEDIATION =
-  'Grant the Falcon API client the "Hosts: Read" scope (Falcon console → Support and resources → API clients and keys), then re-run the check.';
-
-const RECONNECT_REMEDIATION =
-  'Reconnect the CrowdStrike integration and re-enter the Client ID, Client Secret, and the Falcon cloud shown in your Falcon console URL. A key issued in one region is rejected by every other region.';
-
-const TENANT = { resourceType: 'falcon-tenant', resourceId: 'tenant' } as const;
+import {
+  failUnverified,
+  GRANT_REMEDIATION,
+  RECONNECT_REMEDIATION,
+  reportNoDevices,
+  reportTruncated,
+  reportUnreadable,
+  reportUnreturned,
+  reportUnverifiedDevices,
+} from './findings';
 
 const staleAfterDaysVariable: CheckVariable = {
   id: 'stale_after_days',
@@ -49,23 +51,6 @@ const staleAfterDaysVariable: CheckVariable = {
   helpText:
     'A sensor that has not checked in within this many days is reported as not protecting the device. 30 days avoids flagging laptops that are simply switched off during leave.',
 };
-
-/** Every exit that evaluated nothing still has to produce a finding. */
-function failUnverified(
-  ctx: CheckContext,
-  description: string,
-  remediation: string,
-  evidence: Record<string, unknown>,
-): void {
-  ctx.fail({
-    title: 'Could not verify Falcon sensor health',
-    description,
-    ...TENANT,
-    severity: 'high',
-    remediation,
-    evidence,
-  });
-}
 
 async function runSensorHealth(ctx: CheckContext): Promise<void> {
   ctx.log('Starting CrowdStrike sensor health check');
@@ -131,34 +116,20 @@ async function runSensorHealth(ctx: CheckContext): Promise<void> {
   ctx.log(`Found ${deviceIds.length} devices enrolled in Falcon`);
 
   if (enrolled.truncated) {
-    ctx.fail({
-      title: 'Falcon device list was truncated',
-      description: `Paging stopped at the ${MAX_DEVICE_PAGES}-page safety cap, so some enrolled devices were not evaluated.`,
-      ...TENANT,
-      severity: 'medium',
-      remediation:
-        'Re-run the check. If this keeps happening the tenant is larger than this check currently supports — raise it with support so paging can be extended.',
-      evidence: { devicesEvaluated: deviceIds.length, pageCap: MAX_DEVICE_PAGES },
-    });
+    reportTruncated(ctx, deviceIds.length, MAX_DEVICE_PAGES);
   }
 
   if (deviceIds.length === 0) {
-    ctx.fail({
-      title: 'No devices are enrolled in CrowdStrike Falcon',
-      description:
-        'Falcon returned no managed devices, so there is no endpoint protection to evidence.',
-      ...TENANT,
-      severity: 'high',
-      remediation:
-        '1. In the Falcon console, check Host Management for enrolled devices\n' +
-        '2. Deploy the sensor to company devices that are missing it',
-      evidence: { deviceCount: 0 },
-    });
+    reportNoDevices(ctx);
     return;
   }
 
-  const details = await fetchDeviceDetails(ctx, baseUrl, headers, deviceIds);
-  if (details.readFailure?.denied) invalidateFalconToken(ctx);
+  const details = await fetchDeviceDetails(ctx, baseUrl, headers, deviceIds, async () => {
+    // Falcon rejected a batch: the cached token may be revoked, or the
+    // credentials rotated mid-run. Drop it and mint once before giving up.
+    invalidateFalconToken(ctx);
+    return falconAuthHeaders(await getFalconToken(ctx));
+  });
 
   const now = Date.now();
   const unverified: Array<{ deviceId: string; hostname?: string; reason: string }> = [];
@@ -223,36 +194,21 @@ async function runSensorHealth(ctx: CheckContext): Promise<void> {
   }
 
   if (unverified.length) {
-    ctx.fail({
-      title: `Sensor health could not be verified for ${unverified.length} device(s)`,
-      description:
-        'Falcon returned these devices without enough information to confirm their sensors are healthy, so they are neither passed nor failed.',
-      resourceType: 'falcon-tenant',
-      resourceId: 'unverified-devices',
-      severity: 'medium',
-      remediation:
-        'Open the listed devices in Falcon → Host Management and confirm their sensors are reporting, then re-run the check.',
-      evidence: { deviceCount: unverified.length, devices: unverified },
-    });
+    reportUnverifiedDevices(ctx, unverified);
   }
 
-  if (details.unreturned.length || details.envelopeErrors.length) {
-    ctx.fail({
-      title: `Falcon returned no details for ${details.unreturned.length} enrolled device(s)`,
-      description:
-        'These devices were listed as enrolled but Falcon returned no record for them, so their sensor health is unknown. A device decommissioned between the two calls looks exactly like this.',
-      resourceType: 'falcon-tenant',
-      resourceId: 'unreturned-devices',
-      severity: 'medium',
-      remediation:
-        'Re-run the check. If the same devices are still missing, open them in Falcon → Host Management to confirm they exist and are visible to this API client.',
-      evidence: {
-        deviceCount: details.unreturned.length,
-        deviceIds: details.unreturned,
-        falconErrors: details.envelopeErrors,
-        readError: details.readFailure?.error,
-      },
-    });
+  if (details.unreadable.length) {
+    reportUnreadable(ctx, details.unreadable);
+  }
+
+  if (details.unreturned.length) {
+    reportUnreturned(ctx, details.unreturned, details.envelopeErrors);
+  } else if (details.envelopeErrors.length) {
+    // Errors alongside a complete `resources` array are not about a specific
+    // device, so there is nothing to title a finding after.
+    ctx.warn(
+      `Falcon reported ${details.envelopeErrors.length} error(s) alongside a complete device response.`,
+    );
   }
 
   ctx.log('CrowdStrike sensor health check complete');
