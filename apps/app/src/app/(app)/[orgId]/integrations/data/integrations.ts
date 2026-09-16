@@ -34,7 +34,12 @@ export type IntegrationCategory =
   | 'Development'
   | 'Communication'
   | 'Monitoring'
-  | 'Infrastructure';
+  | 'Infrastructure'
+  // Endpoint/EDR tools. Distinct from 'Cloud Security', and matching the
+  // `Security` member of the platform's own IntegrationCategory
+  // (packages/integration-platform/src/types.ts) so a manifest and its catalog
+  // entry cannot disagree about where a tool belongs.
+  | 'Security';
 
 /**
  * All integrations - merged from category files
@@ -58,4 +63,5 @@ export const CATEGORIES: IntegrationCategory[] = [
   'Communication',
   'Monitoring',
   'Infrastructure',
+  'Security',
 ];

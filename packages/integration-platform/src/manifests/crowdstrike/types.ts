@@ -17,7 +17,7 @@ export interface FalconCredentials {
   cloud: FalconCloud;
 }
 
-export type FalconCloud = 'us-1' | 'us-2' | 'eu-1' | 'us-gov-1' | 'us-gov-2';
+export type FalconCloud = 'us-1' | 'us-2' | 'us-3' | 'eu-1' | 'us-gov-1' | 'us-gov-2';
 
 /** Response from POST /oauth2/token */
 export interface FalconTokenResponse {

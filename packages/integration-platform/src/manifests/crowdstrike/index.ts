@@ -67,6 +67,7 @@ export const crowdstrikeManifest: IntegrationManifest = {
           options: [
             { value: 'us-1', label: 'US-1 (api.crowdstrike.com)' },
             { value: 'us-2', label: 'US-2 (api.us-2.crowdstrike.com)' },
+            { value: 'us-3', label: 'US-3 (api.us-3.crowdstrike.com)' },
             { value: 'eu-1', label: 'EU-1 (api.eu-1.crowdstrike.com)' },
             { value: 'us-gov-1', label: 'US-GOV-1 (api.laggar.gcw.crowdstrike.com)' },
             { value: 'us-gov-2', label: 'US-GOV-2 (api.us-gov-2.crowdstrike.mil)' },

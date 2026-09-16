@@ -27,6 +27,24 @@ For each enrolled endpoint:
 
 A device passes when its sensor is **not** in reduced functionality mode **and** it has checked in within the staleness threshold.
 
+## What produces a finding
+
+Support gets asked about these, so they are all listed. Only the first two are about a device being unhealthy; the rest mean something could not be checked.
+
+| Finding | Severity | Meaning |
+|---|---|---|
+| Device is not fully protected | High | The sensor is in reduced functionality mode — installed, but prevention is degraded |
+| Device has not checked in for N days | High | Last check-in is beyond the staleness threshold |
+| Sensor health could not be verified for N devices | Medium | Falcon returned the device without a usable reduced-functionality-mode value or check-in time. Aggregated into one finding, not one per device |
+| Falcon returned no details for N devices | Medium | Listed as enrolled but no record came back. A device decommissioned mid-run looks exactly like this |
+| No devices are enrolled | High | The tenant returned an empty inventory |
+| Could not verify Falcon sensor health | High | Authentication or the device read failed, so nothing was evaluated |
+| Falcon device list was truncated | Medium | Paging hit the safety cap; some devices were not evaluated |
+
+A read failure always produces a finding rather than an empty pass. A run that evaluated nothing must never be recorded as a clean run.
+
+**Containment state is never a failure.** A host your team network-isolated during incident response has a perfectly healthy sensor; its containment status is recorded as evidence only.
+
 ## Configuration Options
 
 - **Treat a device as stale after (days)** — default `30`. A sensor that has not checked in within this window is reported as not currently protecting the device.

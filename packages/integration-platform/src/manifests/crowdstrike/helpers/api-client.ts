@@ -1,5 +1,5 @@
 /**
- * CrowdStrike Falcon API client helpers.
+ * CrowdStrike Falcon token exchange.
  *
  * Falcon uses OAuth 2.0 *client credentials* — a machine-to-machine exchange,
  * not the browser redirect flow. The user pastes a Client ID and Secret, and we
@@ -11,7 +11,7 @@
  * must pass the token themselves:
  *
  *   const token = await getFalconToken(ctx);
- *   const devices = await ctx.fetch('/devices/queries/devices/v1', {
+ *   const devices = await ctx.fetch('/devices/queries/devices-scroll/v1', {
  *     baseUrl: falconBaseUrl(ctx),
  *     headers: falconAuthHeaders(token),
  *   });
@@ -21,33 +21,35 @@
  * The token exchange cannot go through `ctx.fetch` (that prepends the manifest
  * baseUrl and is shaped for JSON), so the retry/timeout behaviour `ctx.fetch`
  * provides is reimplemented here rather than skipped.
- */
-
-import type { CheckContext } from '../../../types';
-import type { FalconCloud, FalconCredentials, FalconTokenResponse } from '../types';
-
-/**
- * Falcon is region-partitioned: a token issued in one cloud is not valid in
- * another, and each cloud has its own API host. Confirmed against a live US-2
- * tenant; the rest are from
- * https://developer.crowdstrike.com/api-reference/introduction/#base-urls
  *
- * A Map (rather than an object literal) so a credential value like
- * "constructor" or "__proto__" cannot index into Object.prototype and yield a
- * bogus host.
+ * Credential validation lives in credentials.ts, error kinds in errors.ts.
  */
-const FALCON_HOSTS = new Map<FalconCloud, string>([
-  ['us-1', 'https://api.crowdstrike.com'],
-  ['us-2', 'https://api.us-2.crowdstrike.com'],
-  ['eu-1', 'https://api.eu-1.crowdstrike.com'],
-  ['us-gov-1', 'https://api.laggar.gcw.crowdstrike.com'],
-  ['us-gov-2', 'https://api.us-gov-2.crowdstrike.mil'],
-]);
+
+import { createHash } from 'crypto';
+import type { CheckContext } from '../../../types';
+import type { FalconCredentials, FalconTokenResponse } from '../types';
+import { falconBaseUrl, readCredentials } from './credentials';
+import { FalconAuthError } from './errors';
+
+export { FALCON_CLOUDS, falconBaseUrl, readCredentials } from './credentials';
+export {
+  FalconAuthError,
+  FalconConfigError,
+  isFalconAuthError,
+  isFalconConfigError,
+} from './errors';
 
 /** Token requests get their own deadline; a check run should not hang on auth. */
 const TOKEN_TIMEOUT_MS = 15_000;
 const TOKEN_MAX_RETRIES = 2;
 const TOKEN_INITIAL_RETRY_DELAY_MS = 500;
+
+/**
+ * Falcon's token rate-limit window is tens of seconds and it advertises the
+ * wait. Honour it, but never sleep longer than this — a check run should fail
+ * with a diagnosable finding rather than hang for minutes.
+ */
+const TOKEN_MAX_RETRY_AFTER_MS = 30_000;
 
 /** Refresh this far before real expiry so a long run cannot use a dead token. */
 const TOKEN_EXPIRY_SKEW_MS = 60_000;
@@ -55,104 +57,94 @@ const TOKEN_EXPIRY_SKEW_MS = 60_000;
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * A problem with what is stored on the connection, not with Falcon.
- *
- * Kept distinct because the generic read-failure remediation says "re-run the
- * check; if it keeps failing, contact support", which is actively wrong here —
- * re-running never fixes a wrong region, and the fix is always to reconnect.
- */
-export class FalconConfigError extends Error {
-  readonly isFalconConfigError = true;
-
-  constructor(message: string) {
-    super(message);
-    this.name = 'FalconConfigError';
-  }
-}
-
-export function isFalconConfigError(err: unknown): err is FalconConfigError {
-  return err instanceof FalconConfigError;
-}
-
-/**
- * One token per connection per run. Falcon rate-limits token creation, so
+ * One token per credential per run. Falcon rate-limits token creation, so
  * minting a fresh token for every check in a run is a good way to get throttled.
+ *
+ * Keyed by a digest of the credentials, NOT by connection id: credentials are
+ * rotated in place (PUT /v1/integrations/connections/:id/credentials), and a
+ * connection-keyed cache would keep serving a revoked token for the rest of its
+ * lifetime — or, if the rotation points at a different Falcon tenant in the same
+ * cloud, read the previous tenant's hosts and store them as this org's evidence.
  */
 const tokenCache = new Map<string, { token: string; expiresAt: number }>();
 
-function credentialString(
-  credentials: Record<string, string | string[]> | undefined,
-  key: string,
-): string | undefined {
-  const raw = credentials?.[key];
-  // ctx.credentials is Record<string, string | string[]>. A stored array would
-  // otherwise reach .trim() and throw a TypeError that reads like a Falcon bug.
-  if (Array.isArray(raw)) {
-    throw new FalconConfigError(
-      `CrowdStrike credential "${key}" is a list, but a single value is required. ` +
-        'Reconnect the integration and enter the value once.',
-    );
-  }
-  return typeof raw === 'string' ? raw.trim() : undefined;
+function cacheKey(credentials: FalconCredentials): string {
+  const digest = createHash('sha256')
+    .update(`${credentials.client_id}:${credentials.client_secret}`)
+    .digest('hex')
+    .slice(0, 32);
+  return `${credentials.cloud}:${digest}`;
 }
 
-export function readCredentials(ctx: CheckContext): FalconCredentials {
-  const credentials = ctx.credentials ?? {};
-
-  const client_id = credentialString(credentials, 'client_id');
-  const client_secret = credentialString(credentials, 'client_secret');
-  const cloud = credentialString(credentials, 'cloud');
-
-  if (!client_id || !client_secret) {
-    throw new FalconConfigError(
-      'CrowdStrike credentials are incomplete — both Client ID and Client Secret are required.',
-    );
+/** Drop expired entries so a long-lived process does not accumulate them. */
+function evictExpired(now: number): void {
+  for (const [key, entry] of tokenCache) {
+    if (entry.expiresAt <= now) tokenCache.delete(key);
   }
-
-  // Deliberately no default. Falcon rejects a token minted in the wrong cloud,
-  // and silently falling back to US-1 sent a US-2 tenant's credentials to the
-  // wrong host and surfaced as an unexplained 401 on every device read.
-  if (!cloud) {
-    throw new FalconConfigError(
-      'CrowdStrike Falcon cloud is not set on this connection. ' +
-        'Reconnect and choose the region shown in your Falcon console URL.',
-    );
-  }
-
-  if (!FALCON_HOSTS.has(cloud as FalconCloud)) {
-    throw new FalconConfigError(
-      `Unknown CrowdStrike Falcon cloud "${cloud}". ` +
-        `Expected one of: ${[...FALCON_HOSTS.keys()].join(', ')}.`,
-    );
-  }
-
-  return { client_id, client_secret, cloud: cloud as FalconCloud };
 }
 
-/** The API host for this connection's Falcon cloud. */
-export function falconBaseUrl(ctx: CheckContext): string {
-  const { cloud } = readCredentials(ctx);
-  // Non-null: readCredentials has already rejected unknown clouds.
-  return FALCON_HOSTS.get(cloud)!;
+/**
+ * Drop the cached token for this connection's credentials.
+ *
+ * Call this when Falcon rejects a call with 401 mid-run: the cached token is
+ * either revoked or was minted against credentials that have since been
+ * rotated, and keeping it poisons every later call in the process.
+ */
+export function invalidateFalconToken(ctx: CheckContext): void {
+  try {
+    tokenCache.delete(cacheKey(readCredentials(ctx)));
+  } catch {
+    // Unreadable credentials mean there is nothing cached to drop.
+  }
 }
 
-function isRetryableTokenStatus(status: number): boolean {
-  return status === 429 || status >= 500;
+/** Test seam — the cache is module state shared across runs in one process. */
+export function clearFalconTokenCache(): void {
+  tokenCache.clear();
+}
+
+/** Milliseconds to wait, from whichever rate-limit header Falcon sent. */
+function retryAfterMs(response: Response, now: number): number | undefined {
+  // Falcon's documented header for the token endpoint is an epoch seconds value.
+  const falcon = response.headers.get('X-RateLimit-RetryAfter');
+  if (falcon) {
+    const epochSeconds = Number(falcon);
+    if (Number.isFinite(epochSeconds)) {
+      const waitMs = epochSeconds * 1000 - now;
+      if (waitMs > 0) return Math.min(waitMs, TOKEN_MAX_RETRY_AFTER_MS);
+    }
+  }
+
+  const standard = response.headers.get('Retry-After');
+  if (standard) {
+    const seconds = Number(standard);
+    const waitMs = Number.isFinite(seconds) ? seconds * 1000 : new Date(standard).getTime() - now;
+    if (waitMs > 0) return Math.min(waitMs, TOKEN_MAX_RETRY_AFTER_MS);
+  }
+
+  return undefined;
 }
 
 /**
  * Exchange the Client ID and Secret for a bearer token.
  *
- * Retries 429/5xx and transport blips with backoff, mirroring the policy
- * `ctx.fetch` applies (runtime/check-context.ts). Tokens are reused for the rest
- * of the run, honouring `expires_in` less a safety margin.
+ * Retries 429/5xx and transport blips with backoff, honouring Falcon's
+ * rate-limit headers. Tokens are reused for the rest of the run, honouring
+ * `expires_in` less a safety margin.
+ *
+ * Throws FalconAuthError for 400/401/403 — a rejected exchange means bad
+ * credentials or the wrong region, and no scope change fixes it.
  */
 export async function getFalconToken(ctx: CheckContext): Promise<string> {
-  const { client_id, client_secret, cloud } = readCredentials(ctx);
+  const credentials = readCredentials(ctx);
+  const { client_id, client_secret } = credentials;
 
-  const cacheKey = `${ctx.connectionId}:${cloud}`;
-  const cached = tokenCache.get(cacheKey);
-  if (cached && cached.expiresAt > Date.now()) {
+  const now = Date.now();
+  evictExpired(now);
+
+  const key = cacheKey(credentials);
+  const cached = tokenCache.get(key);
+  if (cached && cached.expiresAt > now) {
     return cached.token;
   }
 
@@ -166,10 +158,6 @@ export async function getFalconToken(ctx: CheckContext): Promise<string> {
   let lastError: Error | undefined;
 
   for (let attempt = 0; attempt <= TOKEN_MAX_RETRIES; attempt++) {
-    if (attempt > 0) {
-      await sleep(TOKEN_INITIAL_RETRY_DELAY_MS * Math.pow(2, attempt - 1));
-    }
-
     let response: Response;
     try {
       response = await fetch(tokenUrl, {
@@ -184,21 +172,31 @@ export async function getFalconToken(ctx: CheckContext): Promise<string> {
         `CrowdStrike authentication could not reach ${new URL(tokenUrl).host} ` +
           `(${err instanceof Error ? err.name : 'network error'}).`,
       );
+      if (attempt < TOKEN_MAX_RETRIES) {
+        await sleep(TOKEN_INITIAL_RETRY_DELAY_MS * Math.pow(2, attempt));
+      }
       continue;
     }
 
-    if (!response.ok) {
+    if (response.status === 400 || response.status === 401 || response.status === 403) {
       // Deliberately does not echo the response body — a Falcon auth error can
       // repeat the client_id back, and check logs are stored and shown in the UI.
-      const error = new Error(
-        `CrowdStrike authentication failed (HTTP ${response.status}). ` +
-          'Check the Client ID, Secret, the selected Falcon cloud, and that the ' +
-          'API client has the Hosts: Read scope.',
+      throw new FalconAuthError(
+        `CrowdStrike rejected these credentials (HTTP ${response.status}). ` +
+          'Check the Client ID and Secret, and that the selected Falcon cloud matches ' +
+          'the region in your Falcon console URL.',
+        response.status,
       );
-      (error as Error & { status: number }).status = response.status;
+    }
 
-      if (isRetryableTokenStatus(response.status) && attempt < TOKEN_MAX_RETRIES) {
-        lastError = error;
+    if (!response.ok) {
+      const error = new Error(`CrowdStrike authentication failed (HTTP ${response.status}).`);
+      (error as Error & { status: number }).status = response.status;
+      lastError = error;
+
+      if (attempt < TOKEN_MAX_RETRIES) {
+        const advised = retryAfterMs(response, Date.now());
+        await sleep(advised ?? TOKEN_INITIAL_RETRY_DELAY_MS * Math.pow(2, attempt));
         continue;
       }
       throw error;
@@ -211,7 +209,7 @@ export async function getFalconToken(ctx: CheckContext): Promise<string> {
     }
 
     const lifetimeMs = (data.expires_in ?? 0) * 1000;
-    tokenCache.set(cacheKey, {
+    tokenCache.set(key, {
       token: data.access_token,
       expiresAt: Date.now() + Math.max(0, lifetimeMs - TOKEN_EXPIRY_SKEW_MS),
     });
@@ -220,11 +218,6 @@ export async function getFalconToken(ctx: CheckContext): Promise<string> {
   }
 
   throw lastError ?? new Error('CrowdStrike authentication failed.');
-}
-
-/** Drop any cached token for this connection (used by tests). */
-export function clearFalconTokenCache(): void {
-  tokenCache.clear();
 }
 
 /** Headers to pass to `ctx.fetch` for an authenticated Falcon call. */

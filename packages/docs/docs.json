@@ -106,7 +106,7 @@
           },
           {
             "group": "Integration Guides",
-            "pages": ["integrations/aikido"]
+            "pages": ["integrations/aikido", "integrations/crowdstrike"]
           },
           {
             "group": "Developer Guides",

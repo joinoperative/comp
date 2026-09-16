@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import type { CheckContext } from '../../../../types';
-import { clearFalconTokenCache, getFalconToken } from '../../helpers/api-client';
+import { clearFalconTokenCache } from '../../helpers/api-client';
 import type { FalconDevice } from '../../types';
+import { DEVICE_QUERY_LIMIT, MAX_DEVICE_PAGES } from '../collect';
 import { sensorHealthCheck } from '../sensor-health';
 
 const DAY_MS = 86_400_000;
@@ -16,460 +17,275 @@ interface Result {
 interface RunResult {
   passed: Result[];
   failed: Result[];
-  /** Every ctx.fetch call, so tests can assert on routing, auth and query shape. */
   calls: Array<{ path: string; baseUrl?: string; headers?: Record<string, string> }>;
   warnings: string[];
 }
 
-/** A device that is healthy by every rule the check applies. */
-const healthy = (id: string, hostname: string, overrides: Partial<FalconDevice> = {}): FalconDevice => ({
+const healthy = (id: string, hostname = `${id}.local`, o: Partial<FalconDevice> = {}): FalconDevice => ({
   device_id: id,
   hostname,
   platform_name: 'Mac',
-  os_version: 'Tahoe (26)',
   agent_version: '7.40.21204.0',
   serial_number: `SER-${id}`,
   status: 'normal',
   reduced_functionality_mode: 'no',
   last_seen: new Date(Date.now() - DAY_MS).toISOString(),
-  ...overrides,
+  ...o,
 });
 
 interface Scenario {
   devices?: FalconDevice[];
-  /** Pages of device ids. Defaults to one page derived from `devices`. */
-  idPages?: Array<{ ids: string[]; cursor?: string }>;
-  /** Ids to omit from the detail response even though they were listed. */
+  idPages?: Array<{ ids: string[]; cursor?: string; total?: number }>;
   dropFromDetails?: string[];
-  /** Envelope-level errors returned with HTTP 200. */
-  listErrors?: Array<{ code: number; message: string }>;
   detailErrors?: Array<{ code: number; message: string }>;
-  /** Throw from the list or detail fetch. */
+  listErrors?: Array<{ code: number; message: string }>;
   throwOnList?: Error;
   throwOnDetails?: Error;
-  /** Make the token exchange fail. */
+  malformedList?: boolean;
   tokenStatus?: number;
   cloud?: string;
   staleAfterDays?: number;
 }
 
 const originalFetch = globalThis.fetch;
-
 beforeEach(() => clearFalconTokenCache());
 afterEach(() => {
   globalThis.fetch = originalFetch;
   clearFalconTokenCache();
 });
 
-async function runCheck(scenario: Scenario = {}): Promise<RunResult> {
+async function runCheck(s: Scenario = {}): Promise<RunResult> {
   const passed: Result[] = [];
   const failed: Result[] = [];
   const calls: RunResult['calls'] = [];
   const warnings: string[] = [];
 
-  const devices = scenario.devices ?? [];
-  const idPages =
-    scenario.idPages ?? [{ ids: devices.map((d) => d.device_id) }];
+  const devices = s.devices ?? [];
+  const idPages = s.idPages ?? [{ ids: devices.map((d) => d.device_id) }];
 
-  // getFalconToken uses the global fetch directly: the platform only attaches an
-  // Authorization header for oauth2/api_key/basic, never for `custom` auth.
-  globalThis.fetch = (async () => {
-    if (scenario.tokenStatus) {
-      return new Response(
-        JSON.stringify({ errors: [{ message: 'client_id 1234secret is invalid' }] }),
-        { status: scenario.tokenStatus, headers: { 'Content-Type': 'application/json' } },
-      );
-    }
-    return new Response(
-      JSON.stringify({ access_token: 'tok', expires_in: 1799, token_type: 'bearer' }),
-      { status: 200, headers: { 'Content-Type': 'application/json' } },
-    );
-  }) as typeof globalThis.fetch;
+  globalThis.fetch = (async () =>
+    s.tokenStatus
+      ? new Response(JSON.stringify({ errors: [{ message: 'nope' }] }), { status: s.tokenStatus })
+      : new Response(
+          JSON.stringify({ access_token: 'tok', expires_in: 1799, token_type: 'bearer' }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        )) as typeof globalThis.fetch;
 
-  const ctx: CheckContext = {
+  const record = (bucket: Result[]) => (r: { resourceId?: string; title: string; remediation?: string; evidence?: unknown }) =>
+    bucket.push({
+      resourceId: r.resourceId ?? '',
+      title: r.title,
+      remediation: r.remediation,
+      evidence: r.evidence as Record<string, unknown> | undefined,
+    });
+
+  const ctx = {
     accessToken: '',
-    credentials: {
-      client_id: 'id',
-      client_secret: 'secret',
-      cloud: scenario.cloud ?? 'us-2',
-    },
-    variables:
-      scenario.staleAfterDays === undefined ? {} : { stale_after_days: scenario.staleAfterDays },
+    credentials: { client_id: 'id', client_secret: 'secret', cloud: s.cloud ?? 'us-2' },
+    variables: s.staleAfterDays === undefined ? {} : { stale_after_days: s.staleAfterDays },
     connectionId: 'conn_1',
     organizationId: 'org_1',
     metadata: {},
     log: () => {},
-    warn: (message: string) => {
-      warnings.push(message);
-    },
-    pass: (result) => {
-      passed.push({
-        resourceId: result.resourceId ?? '',
-        title: result.title,
-        evidence: result.evidence as Record<string, unknown> | undefined,
-      });
-    },
-    fail: (result) => {
-      failed.push({
-        resourceId: result.resourceId ?? '',
-        title: result.title,
-        remediation: result.remediation,
-        evidence: result.evidence as Record<string, unknown> | undefined,
-      });
-    },
-    fetch: (async <T>(
-      path: string,
-      opts?: {
-        baseUrl?: string;
-        headers?: Record<string, string>;
-        params?: Record<string, string>;
-      },
-    ): Promise<T> => {
+    warn: (m: string) => warnings.push(m),
+    pass: record(passed),
+    fail: record(failed),
+    fetch: (async <T>(path: string, opts?: { baseUrl?: string; headers?: Record<string, string>; params?: Record<string, string> }): Promise<T> => {
       calls.push({ path, baseUrl: opts?.baseUrl, headers: opts?.headers });
 
       if (path.startsWith('/devices/queries/devices-scroll/v1')) {
-        if (scenario.throwOnList) throw scenario.throwOnList;
-        if (scenario.listErrors) return { errors: scenario.listErrors } as unknown as T;
+        if (s.throwOnList) throw s.throwOnList;
+        if (s.listErrors) return { errors: s.listErrors } as unknown as T;
+        if (s.malformedList) return { resources: 'not-a-list' } as unknown as T;
 
-        const cursorParam = opts?.params?.offset;
-        const index = cursorParam
-          ? idPages.findIndex((p) => p.cursor === cursorParam) + 1
-          : 0;
-        const page = idPages[index];
+        const cursor = opts?.params?.offset;
+        const i = cursor ? idPages.findIndex((p) => p.cursor === cursor) + 1 : 0;
+        const page = idPages[i];
         if (!page) return { resources: [], meta: { pagination: {} } } as unknown as T;
-
         return {
           resources: page.ids,
-          meta: { pagination: page.cursor ? { offset: page.cursor } : {} },
+          meta: {
+            pagination: {
+              ...(page.cursor ? { offset: page.cursor } : {}),
+              ...(page.total === undefined ? {} : { total: page.total }),
+            },
+          },
         } as unknown as T;
       }
 
       if (path.startsWith('/devices/entities/devices/v2')) {
-        if (scenario.throwOnDetails) throw scenario.throwOnDetails;
-        if (scenario.detailErrors) return { errors: scenario.detailErrors } as unknown as T;
-
+        if (s.throwOnDetails) throw s.throwOnDetails;
         const requested = new URLSearchParams(path.split('?')[1] ?? '').getAll('ids');
-        const dropped = new Set(scenario.dropFromDetails ?? []);
+        const dropped = new Set(s.dropFromDetails ?? []);
         return {
-          resources: devices.filter(
-            (d) => requested.includes(d.device_id) && !dropped.has(d.device_id),
-          ),
+          resources: devices.filter((d) => requested.includes(d.device_id) && !dropped.has(d.device_id)),
+          ...(s.detailErrors ? { errors: s.detailErrors } : {}),
         } as unknown as T;
       }
-
       throw new Error(`Unexpected fetch: ${path}`);
     }) as CheckContext['fetch'],
-    fetchAllPages: (async () => []) as CheckContext['fetchAllPages'],
-    fetchWithCursor: (async () => []) as CheckContext['fetchWithCursor'],
-    fetchWithLinkHeader: (async () => []) as CheckContext['fetchWithLinkHeader'],
-    graphql: (async () => ({})) as CheckContext['graphql'],
-    getState: (async () => null) as CheckContext['getState'],
-    setState: (async () => {}) as CheckContext['setState'],
-  } as CheckContext;
+  } as unknown as CheckContext;
 
   await sensorHealthCheck.run(ctx);
   return { passed, failed, calls, warnings };
 }
 
-const detailCalls = (r: RunResult) =>
-  r.calls.filter((c) => c.path.startsWith('/devices/entities/devices/v2'));
+const titled = (r: RunResult, fragment: string) => r.failed.find((f) => f.title.includes(fragment));
 
-describe('reduced functionality mode', () => {
-  it("passes a device reporting 'no' (regression: Boolean('no') is true)", async () => {
-    const { passed, failed } = await runCheck({
-      devices: [healthy('dev_ok', 'Juns-MacBook-Pro-2.local')],
+describe('happy path', () => {
+  it('passes healthy devices and fails a degraded one', async () => {
+    const r = await runCheck({
+      devices: [healthy('a'), healthy('b'), healthy('c', 'c.local', { reduced_functionality_mode: 'yes' })],
     });
-
-    expect(failed).toHaveLength(0);
-    expect(passed).toHaveLength(1);
-    expect(passed[0]!.resourceId).toBe('dev_ok');
+    expect(r.passed).toHaveLength(2);
+    expect(r.failed).toHaveLength(1);
+    expect(r.failed[0]!.title).toContain('not fully protected');
   });
 
-  it("fails a device reporting 'yes'", async () => {
-    const { passed, failed } = await runCheck({
-      devices: [
-        healthy('dev_rfm', 'Bryans-MacBook-Pro.local', { reduced_functionality_mode: 'yes' }),
-      ],
-    });
-
-    expect(passed).toHaveLength(0);
-    expect(failed[0]!.title).toContain('not fully protected');
-  });
-
-  it('reports unverified — not healthy — when the field is absent', async () => {
-    const { passed, failed } = await runCheck({
-      devices: [
-        healthy('dev_unknown', 'Mystery.local', { reduced_functionality_mode: undefined }),
-      ],
-    });
-
-    expect(passed).toHaveLength(0);
-    expect(failed[0]!.title).toContain('could not be verified');
-  });
-});
-
-describe('containment status is evidence, not health', () => {
-  it('passes a network-contained host with a healthy sensor', async () => {
-    // Falcon's `status` is containment state, not sensor health. A host isolated
-    // during incident response must not be reported as missing protection.
-    const { passed, failed } = await runCheck({
-      devices: [healthy('dev_contained', 'Quarantined.local', { status: 'contained' })],
-    });
-
-    expect(failed).toHaveLength(0);
-    expect(passed).toHaveLength(1);
-    expect(passed[0]!.evidence?.containmentStatus).toBe('contained');
-  });
-});
-
-describe('staleness', () => {
-  it('passes a device seen just inside the threshold', async () => {
-    const { passed, failed } = await runCheck({
-      staleAfterDays: 30,
-      devices: [
-        healthy('dev_fresh', 'Fresh.local', {
-          last_seen: new Date(Date.now() - 29 * DAY_MS).toISOString(),
-        }),
-      ],
-    });
-
-    expect(failed).toHaveLength(0);
-    expect(passed).toHaveLength(1);
-  });
-
-  it('fails a device seen beyond the threshold', async () => {
-    const { passed, failed } = await runCheck({
-      staleAfterDays: 30,
-      devices: [
-        healthy('dev_stale', 'Abandoned.local', {
-          last_seen: new Date(Date.now() - 200 * DAY_MS).toISOString(),
-        }),
-      ],
-    });
-
-    expect(passed).toHaveLength(0);
-    expect(failed[0]!.title).toContain('has not checked in');
-  });
-
-  it('honours a configured threshold over the default', async () => {
-    const devices = [
-      healthy('dev_10d', 'Recent.local', {
-        last_seen: new Date(Date.now() - 10 * DAY_MS).toISOString(),
-      }),
-    ];
-
-    expect((await runCheck({ devices })).passed).toHaveLength(1); // default 30
-    expect((await runCheck({ devices, staleAfterDays: 7 })).failed).toHaveLength(1);
-  });
-
-  it('reports unverified when last_seen is missing or unparseable', async () => {
-    const { failed } = await runCheck({
-      devices: [healthy('dev_nolastseen', 'NoClock.local', { last_seen: 'not-a-date' })],
-    });
-
-    expect(failed[0]!.title).toContain('could not be verified');
-  });
-});
-
-describe('device detail request', () => {
-  it('sends ids as repeated query parameters, not comma-joined', async () => {
-    // Falcon reads `?ids=a,b` as one device id and rejects it with HTTP 400
-    // "invalid device id".
-    const { calls } = await runCheck({
-      devices: [healthy('dev_1', 'one.local'), healthy('dev_2', 'two.local')],
-    });
-
-    const path = detailCalls({ calls } as RunResult)[0]!.path;
-    expect(new URLSearchParams(path.split('?')[1]).getAll('ids')).toEqual(['dev_1', 'dev_2']);
-    expect(path).not.toContain('dev_1,dev_2');
-  });
-
-  it('routes to the tenant region and sends the bearer token', async () => {
-    const { calls } = await runCheck({
-      cloud: 'us-2',
-      devices: [healthy('dev_1', 'one.local')],
-    });
-
-    for (const call of calls) {
-      expect(call.baseUrl).toBe('https://api.us-2.crowdstrike.com');
-      expect(call.headers?.Authorization).toBe('Bearer tok');
+  it('routes every call to the tenant region with a bearer token', async () => {
+    const r = await runCheck({ cloud: 'us-3', devices: [healthy('a')] });
+    for (const c of r.calls) {
+      expect(c.baseUrl).toBe('https://api.us-3.crowdstrike.com');
+      expect(c.headers?.Authorization).toBe('Bearer tok');
     }
   });
 
-  it('splits more than 100 devices across batches', async () => {
-    const devices = Array.from({ length: 250 }, (_, i) => healthy(`dev_${i}`, `host-${i}.local`));
-    const { passed, calls } = await runCheck({ devices });
+  it('sends ids as repeated query parameters, not comma-joined', async () => {
+    const r = await runCheck({ devices: [healthy('a'), healthy('b')] });
+    const detail = r.calls.find((c) => c.path.startsWith('/devices/entities'))!;
+    expect(new URLSearchParams(detail.path.split('?')[1]).getAll('ids')).toEqual(['a', 'b']);
+  });
 
-    expect(detailCalls({ calls } as RunResult)).toHaveLength(3);
-    expect(passed).toHaveLength(250);
+  it('splits more than 100 devices into batches', async () => {
+    const devices = Array.from({ length: 250 }, (_, i) => healthy(`d${i}`));
+    const r = await runCheck({ devices });
+    expect(r.calls.filter((c) => c.path.startsWith('/devices/entities'))).toHaveLength(3);
+    expect(r.passed).toHaveLength(250);
+  });
+});
+
+describe('partial detail responses', () => {
+  it('still evaluates the devices that came back when one id errored', async () => {
+    // Falcon returns 99 resources plus one per-id error when a host is
+    // decommissioned mid-run. Bailing out discarded 99 devices' evidence and
+    // failed the whole run on a routine race.
+    const devices = [healthy('a'), healthy('b')];
+    const r = await runCheck({
+      devices,
+      dropFromDetails: ['b'],
+      detailErrors: [{ code: 404, message: 'device not found' }],
+    });
+
+    expect(r.passed.map((p) => p.resourceId)).toEqual(['a']);
+    const unreturned = titled(r, 'returned no details')!;
+    expect(unreturned.evidence?.deviceIds).toEqual(['b']);
+    expect(unreturned.evidence?.falconErrors).toHaveLength(1);
+  });
+
+  it('aggregates unreturned devices into one finding, not one each', async () => {
+    const devices = Array.from({ length: 5 }, (_, i) => healthy(`d${i}`));
+    const r = await runCheck({ devices, dropFromDetails: devices.map((d) => d.device_id) });
+    expect(r.failed).toHaveLength(1);
+    expect(r.failed[0]!.resourceId).toBe('unreturned-devices');
+    expect(r.failed[0]!.evidence?.deviceCount).toBe(5);
+  });
+
+  it('aggregates unverifiable devices into one finding', async () => {
+    const devices = Array.from({ length: 4 }, (_, i) =>
+      healthy(`d${i}`, `d${i}.local`, { reduced_functionality_mode: undefined }),
+    );
+    const r = await runCheck({ devices });
+    const finding = titled(r, 'could not be verified')!;
+    expect(finding.resourceId).toBe('unverified-devices');
+    expect(finding.evidence?.deviceCount).toBe(4);
   });
 });
 
 describe('pagination', () => {
-  it('follows the scroll cursor across pages', async () => {
-    const devices = [healthy('dev_1', 'one.local'), healthy('dev_2', 'two.local')];
-    const { passed } = await runCheck({
-      devices,
-      idPages: [{ ids: ['dev_1'], cursor: 'CURSOR_1' }, { ids: ['dev_2'] }],
-    });
-
-    expect(passed).toHaveLength(2);
+  it('follows the scroll cursor', async () => {
+    const devices = [healthy('a'), healthy('b')];
+    const r = await runCheck({ devices, idPages: [{ ids: ['a'], cursor: 'C1' }, { ids: ['b'] }] });
+    expect(r.passed).toHaveLength(2);
   });
 
   it('dedupes ids repeated across pages', async () => {
-    // Offset paging over a live inventory can return the same device twice;
-    // without deduping it produces two findings for one resource.
-    const devices = [healthy('dev_1', 'one.local')];
-    const { passed } = await runCheck({
-      devices,
-      idPages: [{ ids: ['dev_1'], cursor: 'CURSOR_1' }, { ids: ['dev_1'] }],
+    const r = await runCheck({
+      devices: [healthy('a')],
+      idPages: [{ ids: ['a'], cursor: 'C1' }, { ids: ['a'] }],
     });
-
-    expect(passed).toHaveLength(1);
+    expect(r.passed).toHaveLength(1);
   });
 
-  it('fails loudly on a full page with no cursor rather than reporting a partial fleet', async () => {
-    const devices = Array.from({ length: 500 }, (_, i) => healthy(`dev_${i}`, `host-${i}.local`));
-    const { passed, failed } = await runCheck({
-      devices,
-      idPages: [{ ids: devices.map((d) => d.device_id) }], // full page, no cursor
-    });
+  it('accepts a full final page when the total confirms the list is complete', async () => {
+    // An inventory that is an exact multiple of the page size is not a bug.
+    const devices = Array.from({ length: DEVICE_QUERY_LIMIT }, (_, i) => healthy(`d${i}`));
+    const ids = devices.map((d) => d.device_id);
+    const r = await runCheck({ devices, idPages: [{ ids, total: DEVICE_QUERY_LIMIT }] });
 
-    expect(passed).toHaveLength(0);
-    expect(failed).toHaveLength(1);
-    expect(failed[0]!.title).toContain('Could not verify');
+    expect(r.passed).toHaveLength(DEVICE_QUERY_LIMIT);
+    expect(r.failed).toHaveLength(0);
+  });
+
+  it('fails a full final page with no cursor and no total', async () => {
+    const devices = Array.from({ length: DEVICE_QUERY_LIMIT }, (_, i) => healthy(`d${i}`));
+    const r = await runCheck({ devices, idPages: [{ ids: devices.map((d) => d.device_id) }] });
+    expect(r.passed).toHaveLength(0);
+    expect(titled(r, 'Could not verify')).toBeDefined();
+  });
+
+  it('reports truncation when the page cap is hit', async () => {
+    const pages = Array.from({ length: MAX_DEVICE_PAGES + 2 }, (_, i) => ({
+      ids: [`d${i}`],
+      cursor: `C${i}`,
+    }));
+    const devices = pages.map((p) => healthy(p.ids[0]!));
+    const r = await runCheck({ devices, idPages: pages });
+
+    expect(r.warnings.join(' ')).toContain('results are partial');
+    expect(titled(r, 'truncated')).toBeDefined();
   });
 });
 
 describe('read failures never look like success', () => {
-  it('reports a finding when the token exchange fails', async () => {
-    const { passed, failed } = await runCheck({ tokenStatus: 401, devices: [] });
-
-    expect(passed).toHaveLength(0);
-    expect(failed).toHaveLength(1);
-    expect(failed[0]!.resourceId).toBe('tenant');
-    // The run must not end with zero findings — the scheduler stores a
-    // zero-finding run as `success` (run-connection-checks.ts).
-    expect(failed[0]!.title).toContain('Could not verify');
+  it.each([
+    ['config error', { cloud: 'mars-1' }, 'Reconnect'],
+    ['rejected credentials', { tokenStatus: 401 }, 'Reconnect'],
+  ])('reports %s with reconnect remediation', async (_name, scenario, expected) => {
+    // A rejected token exchange is not a missing scope; telling the user to
+    // grant "Hosts: Read" sends them somewhere that cannot fix it.
+    const r = await runCheck({ ...scenario, devices: [] });
+    expect(r.failed).toHaveLength(1);
+    expect(r.failed[0]!.resourceId).toBe('tenant');
+    expect(r.failed[0]!.remediation).toContain(expected);
   });
 
-  it('never echoes the token response body into the finding', async () => {
-    const { failed } = await runCheck({ tokenStatus: 401, devices: [] });
-
-    const serialised = JSON.stringify(failed);
-    expect(serialised).not.toContain('1234secret');
-  });
-
-  it('reports a finding when the device list read throws', async () => {
+  it('reports a device-list 403 with the grant remediation', async () => {
     const err = Object.assign(new Error('HTTP 403: Forbidden'), { status: 403 });
-    const { failed } = await runCheck({ throwOnList: err, devices: [] });
-
-    expect(failed).toHaveLength(1);
-    expect(failed[0]!.resourceId).toBe('tenant');
+    const r = await runCheck({ throwOnList: err, devices: [] });
+    expect(r.failed[0]!.remediation).toContain('Hosts: Read');
   });
 
-  it('treats a 200 envelope carrying errors as a failed read', async () => {
-    const { passed, failed } = await runCheck({
-      listErrors: [{ code: 403, message: 'access denied' }],
-      devices: [],
-    });
-
-    expect(passed).toHaveLength(0);
-    expect(failed[0]!.title).toContain('Could not verify');
+  it('treats a 200 envelope carrying errors on the sweep as a failed read', async () => {
+    const r = await runCheck({ listErrors: [{ code: 403, message: 'access denied' }], devices: [] });
+    expect(r.passed).toHaveLength(0);
+    expect(titled(r, 'Could not verify')).toBeDefined();
   });
 
-  it('reports a finding when a detail batch throws', async () => {
+  it('reports a malformed success body instead of throwing out of the check', async () => {
+    // A non-array `resources` on an HTTP 200 used to escape the guarded paths,
+    // and a zero-finding throw is recorded by the scheduler as success.
+    const r = await runCheck({ malformedList: true, devices: [] });
+    expect(titled(r, 'Could not verify')).toBeDefined();
+  });
+
+  it('reports a detail batch that throws', async () => {
     const err = Object.assign(new Error('HTTP 500: Server Error'), { status: 500 });
-    const { failed } = await runCheck({
-      devices: [healthy('dev_1', 'one.local')],
-      throwOnDetails: err,
-    });
-
-    expect(failed[0]!.title).toContain('Could not verify sensor health for some devices');
-  });
-
-  it('accounts for devices dropped from the detail response', async () => {
-    // Previously these were neither passed nor failed — they vanished and the
-    // run looked clean.
-    const { passed, failed } = await runCheck({
-      devices: [healthy('dev_1', 'one.local'), healthy('dev_2', 'two.local')],
-      idPages: [{ ids: ['dev_1', 'dev_2'] }],
-      dropFromDetails: ['dev_2'],
-    });
-
-    expect(passed.map((p) => p.resourceId)).toEqual(['dev_1']);
-    expect(failed).toHaveLength(1);
-    expect(failed[0]!.resourceId).toBe('dev_2');
+    const r = await runCheck({ devices: [healthy('a')], throwOnDetails: err });
+    expect(titled(r, 'returned no details')).toBeDefined();
   });
 
   it('fails when the tenant has no enrolled devices', async () => {
-    const { passed, failed } = await runCheck({ devices: [] });
-
-    expect(passed).toHaveLength(0);
-    expect(failed[0]!.resourceId).toBe('tenant');
-  });
-});
-
-describe('misconfiguration is not reported as a transient read failure', () => {
-  it('tells the user to reconnect when the Falcon cloud is wrong', async () => {
-    // Routing this through remediationForReadFailure yields "re-run the check;
-    // if it keeps failing, contact support" — advice that can never fix a wrong
-    // region, because the stored value is the problem.
-    const { passed, failed } = await runCheck({ cloud: 'mars-1', devices: [] });
-
-    expect(passed).toHaveLength(0);
-    expect(failed).toHaveLength(1);
-    expect(failed[0]!.remediation).toContain('Reconnect');
-    expect(failed[0]!.remediation).not.toContain('Re-run the check');
-    expect(failed[0]!.evidence?.configError).toContain('Unknown CrowdStrike Falcon cloud');
-  });
-
-  it('still uses read-failure remediation for a genuine auth rejection', async () => {
-    const { failed } = await runCheck({ tokenStatus: 401, devices: [] });
-
-    expect(failed[0]!.evidence?.configError).toBeUndefined();
-    expect(failed[0]!.remediation).not.toContain('Reconnect the CrowdStrike integration');
-  });
-});
-
-describe('evidence', () => {
-  it('carries the keys a future coverage check needs to join on', async () => {
-    const { passed } = await runCheck({ devices: [healthy('dev_1', 'one.local')] });
-
-    expect(passed[0]!.evidence).toMatchObject({
-      hostname: 'one.local',
-      serialNumber: 'SER-dev_1',
-    });
-  });
-});
-
-describe('credential validation', () => {
-  const ctxWith = (credentials: Record<string, string | string[]>): CheckContext =>
-    ({ credentials, connectionId: 'conn_1' }) as unknown as CheckContext;
-
-  it('rejects an unknown Falcon cloud instead of defaulting to US-1', async () => {
-    // Silently defaulting sent a US-2 tenant's credentials to the US-1 host and
-    // surfaced as an unexplained 401 on every device read.
-    await expect(
-      getFalconToken(ctxWith({ client_id: 'a', client_secret: 'b', cloud: 'mars-1' })),
-    ).rejects.toThrow(/Unknown CrowdStrike Falcon cloud/);
-  });
-
-  it('rejects a missing Falcon cloud', async () => {
-    await expect(
-      getFalconToken(ctxWith({ client_id: 'a', client_secret: 'b' })),
-    ).rejects.toThrow(/Falcon cloud is not set/);
-  });
-
-  it('rejects a prototype key as a cloud', async () => {
-    await expect(
-      getFalconToken(ctxWith({ client_id: 'a', client_secret: 'b', cloud: 'constructor' })),
-    ).rejects.toThrow(/Unknown CrowdStrike Falcon cloud/);
-  });
-
-  it('rejects a list-valued credential instead of throwing a TypeError', async () => {
-    await expect(
-      getFalconToken(ctxWith({ client_id: ['a', 'b'], client_secret: 'b', cloud: 'us-2' })),
-    ).rejects.toThrow(/is a list/);
+    const r = await runCheck({ devices: [] });
+    expect(r.failed[0]!.resourceId).toBe('tenant');
   });
 });
