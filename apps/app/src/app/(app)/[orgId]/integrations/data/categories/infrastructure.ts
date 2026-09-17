@@ -124,12 +124,19 @@ export const infrastructureIntegrations: Integration[] = [
     name: 'CrowdStrike',
     domain: 'crowdstrike.com',
     description: 'Endpoint detection and response (EDR)',
-    category: 'Infrastructure',
+    // Security, matching the code manifest in
+    // packages/integration-platform/src/manifests/crowdstrike. Listed in this
+    // file only because there is no security.ts yet; the file is organisational,
+    // the `category` field is what the UI groups by.
+    category: 'Security',
     popular: true,
+    // Deliberately about sensor *health* on enrolled hosts. The integration
+    // cannot see a device with no sensor installed, so "deployment" and
+    // "endpoint protection status" promised coverage it does not measure.
     examplePrompts: [
-      'Check CrowdStrike agent deployment',
-      'Get recent security detections',
-      'Verify endpoint protection status',
+      'Check Falcon sensor health on enrolled devices',
+      'Find devices in reduced functionality mode',
+      'List endpoints that have not checked in recently',
     ],
     setupHint: 'Requires CrowdStrike API credentials',
   },
