@@ -78,7 +78,12 @@ export const githubAppManifest: IntegrationManifest = {
       // Where to send a user who authorized but has NOT installed the App yet, so
       // they can install it on their org and choose repositories. The public app
       // slug is the same across environments (one App, multiple callback URLs).
-      installUrl: 'https://github.com/apps/comp-ai-compliance/installations/new',
+      // Operative (self-hosting): the platform admin registers their OWN GitHub
+      // App, so the install redirect must point at that app's slug, not Comp AI's
+      // public one. GITHUB_APP_INSTALL_URL=https://github.com/apps/<slug>/installations/new
+      installUrl:
+        process.env.GITHUB_APP_INSTALL_URL ||
+        'https://github.com/apps/comp-ai-compliance/installations/new',
       scopes: [],
       pkce: false,
       clientAuthMethod: 'body',
