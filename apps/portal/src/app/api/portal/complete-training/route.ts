@@ -1,5 +1,6 @@
 import { auth } from '@/app/lib/auth';
 import { env } from '@/env.mjs';
+import { getServerApiBaseUrl } from '@/app/lib/api-base';
 import { db } from '@db/server';
 import {
   GENERAL_TRAINING_VIDEO_IDS,
@@ -147,7 +148,7 @@ async function sendCompletionEmailIfComplete({
   const serviceToken = env.SERVICE_TOKEN_PORTAL;
   if (!serviceToken) return;
 
-  const apiUrl = env.NEXT_PUBLIC_API_URL || 'http://localhost:3333';
+  const apiUrl = getServerApiBaseUrl();
 
   try {
     if (videoId === HIPAA_TRAINING_ID) {

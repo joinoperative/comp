@@ -1,5 +1,6 @@
 import { auth } from '@/app/lib/auth';
 import { env } from '@/env.mjs';
+import { getServerApiBaseUrl } from '@/app/lib/api-base';
 import { db } from '@db/server';
 import { Breadcrumb, PageLayout } from '@trycompai/design-system';
 import { isRedirectError } from 'next/dist/client/components/redirect-error';
@@ -60,7 +61,7 @@ export default async function PortalCompanyFormPage({
       redirect('/auth');
     }
 
-    const apiUrl = env.NEXT_PUBLIC_API_URL || 'http://localhost:3333';
+    const apiUrl = getServerApiBaseUrl();
     const cookie = reqHeaders.get('cookie') ?? '';
     if (!cookie) {
       redirect(`${basePath}?error=${encodeURIComponent('Failed to authenticate with API')}`);
