@@ -198,6 +198,14 @@ RUN bun install --ignore-scripts
 # Pre-combine schemas for portal build
 RUN cd packages/db && node scripts/combine-schemas.js
 RUN cp packages/db/dist/schema.prisma apps/portal/prisma/schema.prisma
+# Operative: the portal's `build:docker` generates its own client from
+# prisma/schema/ (a directory holding only the generator/datasource stub in
+# git; the model files are gitignored and normally copied in by
+# `bun run db:getschema`). Upstream's stage only wrote the combined file to the
+# old prisma/schema.prisma location, so the generated client had no models
+# ("Property 'policy' does not exist on type 'PrismaClient'"). Mirror the API
+# Dockerfile and copy the model files in.
+RUN find /app/packages/db/prisma/schema -name '*.prisma' ! -name 'schema.prisma' -exec cp {} /app/apps/portal/prisma/schema/ \;
 
 # Ensure Next build has required public env at build-time
 # Operative: the portal's browser auth client reads NEXT_PUBLIC_API_URL
