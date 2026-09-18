@@ -200,8 +200,15 @@ RUN cd packages/db && node scripts/combine-schemas.js
 RUN cp packages/db/dist/schema.prisma apps/portal/prisma/schema.prisma
 
 # Ensure Next build has required public env at build-time
+# Operative: the portal's browser auth client reads NEXT_PUBLIC_API_URL
+# (apps/portal/src/app/lib/auth-client.ts); upstream never declared it here,
+# so the bundle baked http://localhost:3333.
 ARG NEXT_PUBLIC_BETTER_AUTH_URL
+ARG NEXT_PUBLIC_API_URL
+ARG NEXT_PUBLIC_SENTRY_DISABLED
 ENV NEXT_PUBLIC_BETTER_AUTH_URL=$NEXT_PUBLIC_BETTER_AUTH_URL \
+    NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL \
+    NEXT_PUBLIC_SENTRY_DISABLED=$NEXT_PUBLIC_SENTRY_DISABLED \
     NEXT_TELEMETRY_DISABLED=1 NODE_ENV=production \
     NEXT_OUTPUT_STANDALONE=true \
     NODE_OPTIONS=--max_old_space_size=6144

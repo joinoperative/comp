@@ -4,6 +4,26 @@ import './src/env.mjs';
 
 const isStandalone = process.env.NEXT_OUTPUT_STANDALONE === 'true';
 
+// Operative: behind a proxy that rewrites the Host header (Cloudflare Tunnel ->
+// Cloud Run) Next's same-origin check for Server Actions fails, and it falls
+// back to serverActions.allowedOrigins, matched against the request's Origin
+// as a bare host. Same fix as apps/app (patch 0003). The portal's public
+// origin is what NEXT_PUBLIC_BETTER_AUTH_URL is built with.
+const toAllowedOriginHost = (value: string): string => {
+  if (!value.includes('://')) return value;
+  try {
+    return new URL(value).host;
+  } catch {
+    return value;
+  }
+};
+const portalAllowedOrigins =
+  process.env.NODE_ENV === 'production'
+    ? ([process.env.NEXT_PUBLIC_BETTER_AUTH_URL, process.env.NEXT_PUBLIC_API_URL]
+        .filter(Boolean)
+        .map((origin) => toAllowedOriginHost(origin as string)) as string[])
+    : undefined;
+
 const config = {
   transpilePackages: [
     '@trycompai/auth',
@@ -64,6 +84,11 @@ const config = {
     ];
   },
   skipTrailingSlashRedirect: true,
+  experimental: {
+    serverActions: {
+      allowedOrigins: portalAllowedOrigins,
+    },
+  },
   outputFileTracingRoot: path.join(__dirname, '../../'),
   ...(isStandalone
     ? {
