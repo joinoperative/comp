@@ -9,13 +9,13 @@
 # install is filtered or only a subset of packages is built. Upstream's
 # hand-picked COPY list drifted from package.json (auth/billing/company/db
 # were missing) and broke the build. Gather them all, preserving paths.
-FROM oven/bun:1.4.4 AS manifests
+FROM oven/bun:1.3.4 AS manifests
 WORKDIR /src
 COPY . .
 RUN mkdir -p /out && find . -name package.json -not -path '*/node_modules/*' \
     -exec sh -c 'mkdir -p "/out/$(dirname "$1")" && cp "$1" "/out/$1"' _ {} \;
 
-FROM oven/bun:1.4.4 AS deps
+FROM oven/bun:1.3.4 AS deps
 
 WORKDIR /app
 
@@ -42,7 +42,7 @@ RUN PRISMA_SKIP_POSTINSTALL_GENERATE=true bun install --ignore-scripts
 # so this stays minimal — packages/db itself has no workspace:* dependencies on any other
 # package in this monorepo, only @prisma/adapter-pg, @prisma/client, dotenv and zod) and use its
 # own prisma.config.ts, instead of faking the published-package layout.
-FROM oven/bun:1.4.4 AS migrator
+FROM oven/bun:1.3.4 AS migrator
 
 WORKDIR /app
 
